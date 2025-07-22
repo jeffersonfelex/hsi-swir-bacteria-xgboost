@@ -2,6 +2,9 @@ from scipy.io import loadmat
 import pandas as pd
 import os
 
+output_dir = "./ETL/data_processed/data_processed_correction_msc"
+output_path = os.path.join(output_dir, "data_samples_correction_msc.csv")
+
 data = loadmat("./ETL/data_raw/casca_maca.mat")
 
 casca_maca = data['casca_maca']
@@ -12,4 +15,4 @@ df = pd.DataFrame(n_amostras_n_bandas)
 output_dir = "./ETL/data_processed"
 output_path = os.path.join(output_dir, "data_samples_processed.csv")
 
-df.to_csv(output_path, index=False)
+df.to_csv(output_path, index=False, columns="N_amostras")
