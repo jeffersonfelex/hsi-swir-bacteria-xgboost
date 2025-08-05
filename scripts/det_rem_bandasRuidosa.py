@@ -3,19 +3,8 @@ import numpy as np
 import os
 
 def remove_noisy_bands(input_path: str, output_path: str, limiar: float = 1e-4, faixa_min: float = 750, faixa_max: float = 2400):
-    """
-    Remove bandas com baixa variância e fora da faixa espectral confiável e salva o resultado.
-
-    Parâmetros:
-    - input_path: Caminho do CSV de entrada.
-    - output_path: Caminho para salvar o CSV filtrado.
-    - limiar: Variância mínima permitida para uma banda.
-    - faixa_min: Comprimento de onda mínimo.
-    - faixa_max: Comprimento de onda máximo.
-    """
     df = pd.read_csv(input_path)
 
-    # Tenta converter nomes das colunas para float (comprimento de onda)
     try:
         colunas_float = df.columns.astype(float)
     except ValueError:
