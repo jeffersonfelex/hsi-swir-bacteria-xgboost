@@ -16,3 +16,4 @@ opencv-python
 sqlalchemy
 beautifulsoup4
 requests
+spectral
