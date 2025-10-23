@@ -3,76 +3,49 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 import os
 import subprocess
+import sys
 
-# Caminhos
+# 📌 Diretórios
 BASE_DIR = "/mnt/c/Users/jefferson.faria/Documents/GitHub/ic-2025"
-SCRIPT_DIR = f"{BASE_DIR}/etl"  # ajuste conforme onde estão seus scripts
-HSI_ROOT = f"{BASE_DIR}/dataSet/hsi_original"
-OUTPUT_DIR = f"{BASE_DIR}/dataSet/data-preProcessed/pre_processing"
+SCRIPT_PATH = os.path.join(BASE_DIR, "run_pipeline.py")
 
-# Função genérica para chamar scripts Python existentes
-def run_script(script_name: str):
-    script_path = os.path.join(SCRIPT_DIR, script_name)
-    subprocess.run(["python", script_path], check=True)
+# 🛠️ Função para rodar o pipeline completo
+def run_full_pipeline(**kwargs):
+    print(f"🚀 Iniciando execução do pipeline: {SCRIPT_PATH}")
+    result = subprocess.run([sys.executable, SCRIPT_PATH], capture_output=True, text=True)
 
-# Configuração da DAG
+    if result.returncode != 0:
+        print("❌ Erro na execução do pipeline:")
+        print(result.stderr)
+        raise Exception(f"Pipeline falhou: {result.stderr}")
+    else:
+        print("✅ Pipeline executado com sucesso!")
+        print(result.stdout)
+
+# ⚙️ Configurações padrão da DAG
 default_args = {
     "owner": "jefferson",
     "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
     "retries": 1,
 }
 
+# 🪄 DAG
 with DAG(
-    dag_id="hsi_preprocessing_pipeline",
+    dag_id="hsi_full_pipeline",
     default_args=default_args,
-    description="Pipeline ETL para imagens hiperespectrais (ROI, MSC, Log, Derivada, Noise e Features)",
-    schedule_interval=None,  # ou "0 3 * * *" para rodar todo dia 03:00
+    description="Pipeline completo HSI: ETL + Feature Engineering + Seleção de Bandas",
+    schedule_interval=None,  # ⏳ Defina cron se quiser agendar
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    tags=["HSI", "ETL", "ML"],
+    tags=["HSI", "ETL", "Band Selection"],
 ) as dag:
 
-    extract_roi_task = PythonOperator(
-        task_id="extract_roi",
-        python_callable=run_script,
-        op_args=["extract_roi.py"],
+    pipeline_task = PythonOperator(
+        task_id="run_hsi_pipeline",
+        python_callable=run_full_pipeline,
+        provide_context=True
     )
 
-    msc_task = PythonOperator(
-        task_id="msc_signal",
-        python_callable=run_script,
-        op_args=["msc_signal.py"],
-    )
-
-    log_task = PythonOperator(
-        task_id="log_transform",
-        python_callable=run_script,
-        op_args=["log_transform.py"],
-    )
-
-    derivative_task = PythonOperator(
-        task_id="derivative_transform",
-        python_callable=run_script,
-        op_args=["derivative_transform.py"],
-    )
-
-    noise_task = PythonOperator(
-        task_id="noise_band_removal",
-        python_callable=run_script,
-        op_args=["noise_band_removal.py"],
-    )
-
-    features_task = PythonOperator(
-        task_id="feature_engineering",
-        python_callable=run_script,
-        op_args=["feature_engineering.py"],
-    )
-
-    band_selection_task = PythonOperator(
-        task_id="band_selection",
-        python_callable=run_script,
-        op_args=["band_selection.py"],
-    )
-
-    # Dependências (ordem de execução)
-    extract_roi_task >> msc_task >> log_task >> derivative_task >> noise_task >> features_task >> band_selection_task
+    pipeline_task
