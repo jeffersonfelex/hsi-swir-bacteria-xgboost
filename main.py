@@ -2,11 +2,10 @@ import os
 import glob
 import pandas as pd
 from etl import (
-    extract_roi,
+    pre_processing_image, 
     msc_signal,
     log_transform,
     derivative_transform,
-    noise_band_removal,
     descriptive_stats,
     spectral_features,
     index_features,
@@ -65,24 +64,36 @@ def main():
     # ======================
     for folder in folders:
         try:
-            print(f"📂 Processando: {folder}")
+            print(f"\n{'='*70}")
+            print(f"📂 PROCESSANDO: {folder}")
+            print(f"{'='*70}\n")
+            
             hdr_path = os.path.join(HSI_ROOT, folder, "capture", f"{folder}.hdr")
             if not os.path.exists(hdr_path):
                 print(f"⚠️ Arquivo HDR não encontrado para {folder}, pulando...\n")
                 continue
 
-            extract_roi.run(hdr_path, OUTPUT_BASE, folder)
-            msc_signal.run(OUTPUT_BASE, folder)
+            # 📍 ETAPA 1: Detecção de ROI e remoção de bandas ruidosas
+            print("📍 ETAPA 1: Detecção de ROI e remoção de bandas ruidosas")
+            pre_processing_image.run(OUTPUT_BASE, folder)  # Gera {folder}_roi.csv
+            
+            # 📍 ETAPA 2: Multiplicative Scatter Correction (MSC)
+            print("\n📍 ETAPA 2: Multiplicative Scatter Correction (MSC)")
+            msc_signal.run(OUTPUT_BASE, folder)  # Gera {folder}_msc_signal.csv e remove _roi.csv
+            
+            # 📍 ETAPA 3: Transformações adicionais
+            print("\n📍 ETAPA 3: Transformações adicionais")
             log_transform.run(OUTPUT_BASE, folder)
             derivative_transform.run(OUTPUT_BASE, folder)
-            noise_band_removal.run(OUTPUT_BASE, folder)
 
+            # 📍 ETAPA 4: Extração de features
+            print("\n📍 ETAPA 4: Extração de features")
             descriptive_stats.run(OUTPUT_BASE, folder)
             spectral_features.run(OUTPUT_BASE, folder)
             index_features.run(OUTPUT_BASE, folder)
             combine_features.run(OUTPUT_BASE, folder)
 
-            print(f"✅ Finalizado com sucesso: {folder}\n")
+            print(f"\n✅ Finalizado com sucesso: {folder}\n")
 
         except Exception as e:
             print(f"❌ Erro ao processar {folder}: {e}\n")
@@ -120,7 +131,7 @@ def main():
     mi_features_path = os.path.join(FEATURES_DIR, "features_selected_mi.csv")
     feature_selection_xgboost.run(final_dataset_path, mi_features_path, FEATURES_DIR)
 
-    print("🏁 Pipeline completa finalizada com sucesso.")
+    print("\n🏁 Pipeline completa finalizada com sucesso.")
 
 
 if __name__ == "__main__":
