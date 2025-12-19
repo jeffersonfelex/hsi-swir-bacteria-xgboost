@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import pandas as pd
 from etl import (
     pre_processing_image, 
@@ -15,13 +16,13 @@ from etl import (
     label_by_atcc
 )
 
-BASE_DIR = "/mnt/c/Users/jefferson.faria/Documents/GitHub/ic-2025"
+BASE_DIR = "C:/Users/Jefferson/Documents/GitHub/ic-2025"
 HSI_ROOT = f"{BASE_DIR}/dataSet/hsi_original"
 OUTPUT_BASE = f"{BASE_DIR}/dataSet/data-preProcessed/pre_processing"
 FEATURES_DIR = f"{BASE_DIR}/features_selected"
 
-def combine_all_feature_csvs(features_dir: str, combined_filename: str = "dataset_final.csv"):
 
+def combine_all_feature_csvs(features_dir: str, combined_filename: str = "dataset_final.csv"):
     print("Combinando arquivos de features em dataset único...")
     
     feature_files = glob.glob(os.path.join(features_dir, "*_features.csv"))
@@ -41,7 +42,6 @@ def combine_all_feature_csvs(features_dir: str, combined_filename: str = "datase
     dfs = []
     for f in feature_files:
         df = pd.read_csv(f)
-        # Extrair nome da amostra do arquivo
         sample_name = os.path.basename(f).replace("_features.csv", "")
         df["filename"] = sample_name
         dfs.append(df)
@@ -59,62 +59,34 @@ def combine_all_feature_csvs(features_dir: str, combined_filename: str = "datase
     return output_path
 
 
-# ============================================
-# 🔧 Função auxiliar para renomear arquivo
-# ============================================
-def rename_roi_file(output_dir: str, folder_name: str):
-    """
-    CORREÇÃO: Renomeia {folder}_roi_filtrado.csv para {folder}_roi.csv
-    para compatibilidade com msc_signal.run()
-    """
-    src = os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv")
-    dst = os.path.join(output_dir, f"{folder_name}_roi.csv")
+def csv_has_data(filepath: str) -> bool:
+    """Verifica se um arquivo CSV existe e tem dados válidos."""
+    if not os.path.exists(filepath):
+        return False
     
-    if os.path.exists(src):
-        if os.path.exists(dst):
-            os.remove(dst)
-        os.rename(src, dst)
-        print(f"   📝 Renomeado: {os.path.basename(src)} → {os.path.basename(dst)}")
+    if os.path.getsize(filepath) == 0:
+        return False
+    
+    try:
+        df = pd.read_csv(filepath)
+        return not df.empty and len(df.columns) > 0
+    except Exception:
+        return False
+
+
+def ensure_derivada_exists(output_dir: str, folder_name: str, backup_path: str):
+    """
+    Garante que o arquivo derivada existe, restaurando do backup se necessário.
+    """
+    deriv_path = os.path.join(output_dir, f"{folder_name}_derivada.csv")
+    
+    if not os.path.exists(deriv_path) and os.path.exists(backup_path):
+        shutil.copy2(backup_path, deriv_path)
+        print(f"      🔄 Restaurado: {os.path.basename(deriv_path)}")
         return True
-    return False
+    return os.path.exists(deriv_path)
 
 
-# ============================================
-# 🔧 Função para copiar arquivo derivada
-# ============================================
-def preserve_derivada_file(output_dir: str, folder_name: str):
-    """
-    CORREÇÃO: Cria cópia do arquivo derivada antes da extração de features
-    para garantir que todos os módulos tenham acesso ao arquivo.
-    """
-    import shutil
-    
-    src = os.path.join(output_dir, f"{folder_name}_derivada.csv")
-    
-    if os.path.exists(src):
-        # Criar backup se necessário
-        backup = os.path.join(output_dir, f"{folder_name}_derivada_backup.csv")
-        shutil.copy2(src, backup)
-        return True
-    return False
-
-
-def restore_derivada_file(output_dir: str, folder_name: str):
-    """Restaura arquivo derivada do backup se necessário"""
-    src = os.path.join(output_dir, f"{folder_name}_derivada.csv")
-    backup = os.path.join(output_dir, f"{folder_name}_derivada_backup.csv")
-    
-    if not os.path.exists(src) and os.path.exists(backup):
-        os.rename(backup, src)
-        return True
-    elif os.path.exists(backup):
-        os.remove(backup)
-    return False
-
-
-# ============================================
-# 🧠 Pipeline Principal (CORRIGIDA)
-# ============================================
 def main():
     print("🚀 Iniciando pipeline completa...\n")
     print(f"📁 Diretório base: {BASE_DIR}")
@@ -125,7 +97,6 @@ def main():
     os.makedirs(OUTPUT_BASE, exist_ok=True)
     os.makedirs(FEATURES_DIR, exist_ok=True)
 
-    # Listar pastas de amostras HSI
     if not os.path.exists(HSI_ROOT):
         raise FileNotFoundError(f"Diretório HSI não encontrado: {HSI_ROOT}")
     
@@ -139,9 +110,6 @@ def main():
     processed_count = 0
     error_count = 0
 
-    # ======================
-    # 1️⃣ Pré-processamento e extração de features (por amostra)
-    # ======================
     for folder in folders:
         try:
             print(f"\n{'='*70}")
@@ -151,15 +119,11 @@ def main():
             # Verificar se arquivo HDR existe
             hdr_path = os.path.join(HSI_ROOT, folder, "capture", f"{folder}.hdr")
             if not os.path.exists(hdr_path):
-                # Tentar caminho alternativo
                 hdr_path_alt = os.path.join(HSI_ROOT, folder, f"{folder}.hdr")
                 if os.path.exists(hdr_path_alt):
                     hdr_path = hdr_path_alt
                 else:
                     print(f"⚠️ Arquivo HDR não encontrado para {folder}")
-                    print(f"   Tentativas:")
-                    print(f"   - {hdr_path}")
-                    print(f"   - {hdr_path_alt}")
                     print(f"   Pulando...\n")
                     error_count += 1
                     continue
@@ -170,24 +134,23 @@ def main():
             # 📍 ETAPA 1: Detecção de ROI e remoção de bandas ruidosas
             # =====================================================
             print("📍 ETAPA 1: Detecção de ROI e remoção de bandas ruidosas")
-            
-            # NOTA: pre_processing_image.run() precisa do caminho correto
-            # O módulo atual usa output_dir como base para construir o caminho do HDR
-            # Então passamos HSI_ROOT como output_dir aqui
             pre_processing_image.run(HSI_ROOT, folder)
             
-            # CORREÇÃO: Renomear arquivo para compatibilidade
-            # pre_processing_image gera: {folder}_roi_filtrado.csv
-            # msc_signal espera: {folder}_roi.csv
             src_roi = os.path.join(HSI_ROOT, f"{folder}_roi_filtrado.csv")
             dst_roi = os.path.join(OUTPUT_BASE, f"{folder}_roi.csv")
             
             if os.path.exists(src_roi):
-                import shutil
                 shutil.move(src_roi, dst_roi)
                 print(f"   📝 Movido ROI para: {dst_roi}")
             else:
                 print(f"   ⚠️ Arquivo ROI não gerado, pulando amostra...")
+                error_count += 1
+                continue
+            
+            if not csv_has_data(dst_roi):
+                print(f"   ⚠️ ROI sem dados válidos para {folder}, pulando amostra...")
+                if os.path.exists(dst_roi):
+                    os.remove(dst_roi)
                 error_count += 1
                 continue
 
@@ -197,9 +160,8 @@ def main():
             print("\n📍 ETAPA 2: Multiplicative Scatter Correction (MSC)")
             msc_signal.run(OUTPUT_BASE, folder)
             
-            # Verificar se MSC foi aplicado
             msc_file = os.path.join(OUTPUT_BASE, f"{folder}_msc_signal.csv")
-            if not os.path.exists(msc_file) or os.path.getsize(msc_file) == 0:
+            if not csv_has_data(msc_file):
                 print(f"   ⚠️ MSC não gerou dados válidos, pulando amostra...")
                 error_count += 1
                 continue
@@ -209,17 +171,20 @@ def main():
             # =====================================================
             print("\n📍 ETAPA 3: Transformações espectrais")
             
-            # 3.1 - Log transform
             print("   3.1 - Transformada Log(1/R)")
             log_transform.run(OUTPUT_BASE, folder)
             
-            # 3.2 - Derivada Savitzky-Golay
+            log_file = os.path.join(OUTPUT_BASE, f"{folder}_log.csv")
+            if not csv_has_data(log_file):
+                print(f"   ⚠️ Log transform não gerou dados válidos, pulando amostra...")
+                error_count += 1
+                continue
+            
             print("   3.2 - Derivada Savitzky-Golay (1ª ordem)")
             derivative_transform.run(OUTPUT_BASE, folder)
             
-            # Verificar se derivada foi gerada
             deriv_file = os.path.join(OUTPUT_BASE, f"{folder}_derivada.csv")
-            if not os.path.exists(deriv_file) or os.path.getsize(deriv_file) == 0:
+            if not csv_has_data(deriv_file):
                 print(f"   ⚠️ Derivada não gerou dados válidos, pulando amostra...")
                 error_count += 1
                 continue
@@ -229,23 +194,30 @@ def main():
             # =====================================================
             print("\n📍 ETAPA 4: Extração de features")
             
-            # CORREÇÃO: Preservar arquivo derivada para todos os módulos
-            # Alguns módulos removem o arquivo após processamento
-            preserve_derivada_file(OUTPUT_BASE, folder)
+            # ✅ CORREÇÃO: Criar backup PERMANENTE do arquivo derivada
+            backup_deriv = os.path.join(OUTPUT_BASE, f"{folder}_derivada_BACKUP.csv")
+            shutil.copy2(deriv_file, backup_deriv)
+            print(f"   💾 Backup criado: {os.path.basename(backup_deriv)}")
             
-            # 4.1 - Features descritivas (média, std, curtose, skewness)
+            # 4.1 - Features descritivas
             print("   4.1 - Estatísticas descritivas")
+            ensure_derivada_exists(OUTPUT_BASE, folder, backup_deriv)
             descriptive_stats.run(OUTPUT_BASE, folder)
-            restore_derivada_file(OUTPUT_BASE, folder)
             
-            # 4.2 - Features espectrais (gradientes, razões, área)
+            # 4.2 - Features espectrais
             print("   4.2 - Features espectrais")
+            ensure_derivada_exists(OUTPUT_BASE, folder, backup_deriv)
             spectral_features.run(OUTPUT_BASE, folder)
-            restore_derivada_file(OUTPUT_BASE, folder)
             
-            # 4.3 - Índices espectrais (NDI, SR, profundidades)
+            # 4.3 - Índices espectrais
             print("   4.3 - Índices espectrais SWIR")
+            ensure_derivada_exists(OUTPUT_BASE, folder, backup_deriv)
             index_features.run(OUTPUT_BASE, folder)
+            
+            # Limpar backup
+            if os.path.exists(backup_deriv):
+                os.remove(backup_deriv)
+                print(f"   🧹 Backup removido")
             
             # 4.4 - Combinar todas as features
             print("   4.4 - Combinando features")
@@ -297,22 +269,18 @@ def main():
     df = pd.read_csv(final_dataset_path)
     
     try:
-        df = label_by_atcc.gerar_labels_por_atcc(df, limiar_sim=0.9)
+        df = label_by_atcc.gerar_labels_por_atcc(df, limiar_sim=0.30)
     except Exception as e:
         print(f"⚠️ Erro ao gerar labels ATCC: {e}")
         print("   Criando labels fictícios (0) para todas as amostras...")
         df["label"] = 0
 
-    # ======================
-    # 🧼 Limpeza de colunas não numéricas
-    # ======================
+    # Limpeza de colunas
     numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
     
-    # Garantir que 'label' está nas colunas
     if 'label' not in numeric_cols:
         numeric_cols.append('label')
     
-    # Manter filename para rastreabilidade
     cols_to_keep = ["filename"] + [c for c in numeric_cols if c != "filename"]
     cols_to_keep = [c for c in cols_to_keep if c in df.columns]
     
@@ -322,18 +290,17 @@ def main():
     
     print(f"✅ Labels gerados e dataset limpo salvo em: {final_dataset_path}")
     print(f"   Amostras: {len(df)}")
-    print(f"   Features: {len(df.columns) - 2}")  # -2 para filename e label
+    print(f"   Features: {len(df.columns) - 2}")
     print(f"   Labels positivos: {df['label'].sum()}")
     print(f"   Labels negativos: {len(df) - df['label'].sum()}")
 
     # ======================
-    # 4️⃣ Seleção de bandas (MI + XGBoost)
+    # 4️⃣ Seleção de bandas
     # ======================
     print(f"\n{'='*70}")
     print("📊 ETAPA 7: Seleção de features")
     print(f"{'='*70}\n")
     
-    # Verificar se há variabilidade nas labels
     if df['label'].nunique() < 2:
         print("⚠️ Labels sem variabilidade! Pulando seleção de features...")
         print("   (Todas as amostras têm o mesmo label)")

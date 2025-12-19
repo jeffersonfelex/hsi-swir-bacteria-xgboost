@@ -1,103 +1,99 @@
-import os
 import pandas as pd
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-import matplotlib.pyplot as plt
 
-# Identificadores de amostras ATCC conhecidas
+# Identificadores de amostras ATCC conhecidas (cepas resistentes de referência)
 AMOSTRAS_ATCC = ["ATCC13", "ATCC16", "ATCC27"]
 
-def gerar_labels_por_atcc(df: pd.DataFrame, limiar_sim=0.85, plot_distribution=True) -> pd.DataFrame:
+
+def gerar_labels_por_atcc(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
     """
-    Gera labels binárias com base na similaridade espectral com amostras ATCC.
+    Gera labels binárias baseadas na identificação das amostras ATCC.
     
-    ATENÇÃO: Este método assume que amostras ATCC representam cepas resistentes.
-    Validar com dados microbiológicos (antibiograma/qPCR).
+    Labels (simples e direto):
+    - ATCCs → label = 1 (resistente - referência conhecida)
+    - Outras amostras → label = 0 (sensível)
+    
+    Esses labels são usados para seleção de bandas:
+    1. Mutual Information (MI)
+    2. XGBoost Feature Importance
     
     Args:
         df: DataFrame com features e coluna 'filename'
-        limiar_sim: Limiar de similaridade coseno (0-1)
-        plot_distribution: Se True, plota distribuição de similaridades
     
     Returns:
         DataFrame com coluna 'label' adicionada
     """
     
     print(f"\n{'='*70}")
-    print("🏷️  GERAÇÃO DE LABELS POR SIMILARIDADE ATCC")
+    print("🏷️  GERAÇÃO DE LABELS (ATCC = Resistente)")
     print(f"{'='*70}")
     
-    # Verificar coluna filename
+    # Validações
+    if df is None or df.empty:
+        print("❌ DataFrame vazio!")
+        df["label"] = 0
+        return df
+    
     if "filename" not in df.columns:
-        raise ValueError("Coluna 'filename' não encontrada no dataset.")
+        print("❌ Coluna 'filename' não encontrada!")
+        df["label"] = 0
+        return df
     
-    # Selecionar colunas numéricas (features)
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    feature_cols = [c for c in numeric_cols if c not in ["label"]]
+    print(f"📊 Dataset: {len(df):,} linhas")
+    print(f"📋 Amostras únicas: {df['filename'].nunique()}")
     
-    if len(feature_cols) == 0:
-        raise ValueError("Nenhuma feature numérica encontrada!")
+    # Identificar ATCCs
+    pattern = '|'.join(AMOSTRAS_ATCC)
+    atcc_mask = df["filename"].str.contains(pattern, case=False, na=False)
     
-    # Tratar valores ausentes
-    df[feature_cols] = df[feature_cols].fillna(0)
+    n_atcc_linhas = atcc_mask.sum()
+    atcc_filenames = df[atcc_mask]["filename"].unique()
+    non_atcc_filenames = df[~atcc_mask]["filename"].unique()
     
-    # Filtrar amostras ATCC (referências)
-    atcc_mask = df["filename"].str.contains('|'.join(AMOSTRAS_ATCC), case=False, na=False)
-    atcc_data = df[atcc_mask]
+    print(f"\n🔍 Padrões ATCC buscados: {AMOSTRAS_ATCC}")
+    print(f"   ATCCs encontradas: {list(atcc_filenames)}")
+    print(f"   Linhas ATCC: {n_atcc_linhas:,}")
+    print(f"   Amostras clínicas: {list(non_atcc_filenames)}")
     
-    if atcc_data.empty:
-        raise ValueError(f"Nenhuma amostra ATCC encontrada! Esperado: {AMOSTRAS_ATCC}")
+    if n_atcc_linhas == 0:
+        print(f"\n⚠️ Nenhuma amostra ATCC encontrada!")
+        df["label"] = 0
+        return df
     
-    print(f"✅ Amostras ATCC encontradas: {len(atcc_data)}")
-    print(f"   IDs: {atcc_data['filename'].tolist()}")
+    # Gerar labels: ATCCs = 1, outras = 0
+    df["label"] = atcc_mask.astype(int)
     
-    # Calcular similaridade com cada ATCC
-    X = df[feature_cols].values
-    all_similarities = []
+    n_resistentes = df["label"].sum()
+    n_sensiveis = len(df) - n_resistentes
     
-    for idx, row in atcc_data.iterrows():
-        ref_vector = row[feature_cols].values.reshape(1, -1)
-        sim = cosine_similarity(X, ref_vector).flatten()
-        all_similarities.append(sim)
+    print(f"\n🏷️ Labels gerados:")
+    print(f"   Resistentes (ATCC):  {n_resistentes:,} ({n_resistentes/len(df)*100:.1f}%)")
+    print(f"   Sensíveis (outros):  {n_sensiveis:,} ({n_sensiveis/len(df)*100:.1f}%)")
     
-    # Usar máximo de similaridade com qualquer ATCC
-    sim_matrix = np.vstack(all_similarities)
-    sim_max = np.max(sim_matrix, axis=0)
+    # Resumo por amostra
+    print(f"\n📋 Resumo por amostra:")
+    resumo = df.groupby("filename").agg({"label": ["first", "count"]})
+    resumo.columns = ["label", "n_pixels"]
+    resumo["classe"] = resumo["label"].map({1: "RESISTENTE (ATCC)", 0: "SENSÍVEL"})
+    print(resumo.to_string())
     
-    # Estatísticas de similaridade
-    print(f"\n📊 Distribuição de Similaridade:")
-    print(f"   Mínimo:   {sim_max.min():.4f}")
-    print(f"   Máximo:   {sim_max.max():.4f}")
-    print(f"   Média:    {sim_max.mean():.4f}")
-    print(f"   Mediana:  {np.median(sim_max):.4f}")
-    print(f"   Q1:       {np.percentile(sim_max, 25):.4f}")
-    print(f"   Q3:       {np.percentile(sim_max, 75):.4f}")
-    
-    # Gerar labels
-    df["label"] = (sim_max >= limiar_sim).astype(int)
-    df["similarity_atcc"] = sim_max  # Manter para análise
-    
-    n_positivos = df["label"].sum()
-    n_total = len(df)
-    
-    print(f"\n✅ Labels gerados com limiar {limiar_sim}:")
-    print(f"   Positivos (resistentes): {n_positivos} ({n_positivos/n_total*100:.1f}%)")
-    print(f"   Negativos (sensíveis):   {n_total - n_positivos} ({(n_total - n_positivos)/n_total*100:.1f}%)")
-    
-    # Plot distribuição (opcional)
-    if plot_distribution:
-        plt.figure(figsize=(10, 6))
-        plt.hist(sim_max, bins=50, edgecolor='black', alpha=0.7)
-        plt.axvline(limiar_sim, color='red', linestyle='--', linewidth=2, label=f'Limiar = {limiar_sim}')
-        plt.xlabel('Similaridade Coseno com ATCC')
-        plt.ylabel('Frequência')
-        plt.title('Distribuição de Similaridade Espectral com Amostras ATCC')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig('distribuicao_similaridade_atcc.png', dpi=300, bbox_inches='tight')
-        print(f"📊 Gráfico salvo: distribuicao_similaridade_atcc.png")
-        plt.close()
-    
+    print(f"\n{'='*70}")
+    print("✅ Labels gerados! MI e XGBoost podem rodar.")
     print(f"{'='*70}\n")
     
     return df
+
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) < 2:
+        print("Uso: python label_by_atcc.py <dataset.csv>")
+        sys.exit(1)
+    
+    df = pd.read_csv(sys.argv[1])
+    df = gerar_labels_por_atcc(df)
+    
+    output_path = sys.argv[1].replace(".csv", "_com_labels.csv")
+    df.to_csv(output_path, index=False)
+    print(f"💾 Salvo: {output_path}")
