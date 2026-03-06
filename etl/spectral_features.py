@@ -2,108 +2,98 @@ import os
 import numpy as np
 import pandas as pd
 
-KEEP_INTERMEDIATE = False  # ❌ Remove derivada após extrair features
+KEEP_INTERMEDIATE = False
 
-def run(output_dir: str, folder_name: str):
+
+def spectral_features(data: np.ndarray) -> pd.DataFrame:
     """
-    Extrai features espectrais de cada espectro.
-    
-    Features calculadas:
-    - Gradiente médio (derivada local média)
-    - Gradiente máximo (máxima variação entre bandas)
-    - Razão primeira/última banda
-    - Razão bandas quartis (Q1/Q3)
-    - Área sob a curva espectral (integral)
-    - Amplitude espectral (max - min)
-    
+    Extrai índices espectrais empíricos de cada espectro.
+
+    Índices baseados em regiões SWIR características de componentes bacterianos
+    (lipídios, proteínas, polissacarídeos).
+
     Args:
-        output_dir: Diretório de saída
-        folder_name: Nome base do arquivo
+        data: matriz [n_samples × n_bands]
+
+    Returns:
+        DataFrame [n_samples × n_features] com prefixo 'spec_'
     """
-    input_path = os.path.join(output_dir, f"{folder_name}_derivada.csv")
+    n_samples, n_bands = data.shape
+
+    if n_bands < 10:
+        raise ValueError(f"❌ Bandas insuficientes ({n_bands} < 10) para spectral_features.")
+
+    # Índices de banda por região espectral (proporcionais ao total de bandas)
+    idx_1200 = min(int(n_bands * 0.13), n_bands - 1)
+    idx_1450 = min(int(n_bands * 0.30), n_bands - 1)
+    idx_1700 = min(int(n_bands * 0.47), n_bands - 1)
+    idx_2100 = min(int(n_bands * 0.73), n_bands - 1)
+    idx_2300 = min(int(n_bands * 0.87), n_bands - 1)
+
+    b_1200 = data[:, idx_1200]
+    b_1450 = data[:, idx_1450]
+    b_1700 = data[:, idx_1700]
+    b_2100 = data[:, idx_2100]
+    b_2300 = data[:, idx_2300]
+
+    max_vals = np.max(data, axis=1)
+
+    # Segunda derivada para curvatura
+    second_deriv = np.gradient(np.gradient(data, axis=1), axis=1)
+
+    features = {
+        # Normalized Difference Indices
+        "spec_ndi_lipid_protein":   (b_1200 - b_2100) / (b_1200 + b_2100 + 1e-8),
+        "spec_ndi_water_lipid":     (b_1450 - b_1700) / (b_1450 + b_1700 + 1e-8),
+        "spec_ndi_protein_polysac": (b_2100 - b_2300) / (b_2100 + b_2300 + 1e-8),
+        # Simple Ratios
+        "spec_sr_lipid_protein":    b_1200 / (b_2100 + 1e-8),
+        "spec_sr_water_lipid":      b_1450 / (b_1700 + 1e-8),
+        "spec_sr_protein_polysac":  b_2100 / (b_2300 + 1e-8),
+        # Profundidades relativas
+        "spec_depth_1200":          b_1200 / (max_vals + 1e-8),
+        "spec_depth_1450":          b_1450 / (max_vals + 1e-8),
+        "spec_depth_1700":          b_1700 / (max_vals + 1e-8),
+        "spec_depth_2100":          b_2100 / (max_vals + 1e-8),
+        "spec_depth_2300":          b_2300 / (max_vals + 1e-8),
+        # Índices compostos
+        "spec_composite_lipid":     (b_1200 + b_1700) / (2 * max_vals + 1e-8),
+        "spec_composite_protein":   (b_1450 + b_2100) / (2 * max_vals + 1e-8),
+        "spec_composite_polysac":   b_2300 / (max_vals + 1e-8),
+        # Posição do pico
+        "spec_peak_position":       np.argmax(data, axis=1) / n_bands,
+        # Curvatura
+        "spec_curvature_1450":      second_deriv[:, idx_1450],
+        "spec_curvature_2100":      second_deriv[:, idx_2100],
+    }
+
+    return pd.DataFrame(features)
+
+
+def run(output_dir: str, folder_name: str, suffix: str = "derivada"):
+    """
+    Lê um CSV de espectros, aplica spectral_features e salva o resultado.
+    """
+    input_path  = os.path.join(output_dir, f"{folder_name}_{suffix}.csv")
     output_path = os.path.join(output_dir, f"{folder_name}_features_spectral.csv")
 
     if not os.path.exists(input_path):
-        print(f"⚠️ {input_path} não encontrado. Criando saída vazia {output_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise FileNotFoundError(f"❌ Arquivo não encontrado: {input_path}")
 
     df = pd.read_csv(input_path)
     if df.empty:
-        print(f"⚠️ {input_path} vazio. Criando saída vazia {output_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise ValueError(f"❌ Arquivo vazio: {input_path}")
 
-    # Extrair apenas colunas numéricas
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if len(numeric_cols) == 0:
-        print(f"⚠️ Nenhuma coluna numérica em {input_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+    if not numeric_cols:
+        raise ValueError(f"❌ Nenhuma coluna numérica em {input_path}")
 
-    data = df[numeric_cols].values
-    n_samples, n_bands = data.shape
+    feats = spectral_features(df[numeric_cols].values)
+    feats.to_csv(output_path, index=False)
 
-    # Verificar se há bandas suficientes
-    if n_bands < 2:
-        print(f"⚠️ Bandas insuficientes ({n_bands} < 2) para features espectrais")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+    print(f"✅ spectral_features extraídas: {output_path}")
+    print(f"   Dimensões: {feats.shape[0]} amostras × {feats.shape[1]} features")
 
-    # ========================================
-    # CALCULAR FEATURES ESPECTRAIS
-    # ========================================
-
-    features_dict = {}
-
-    # 1. Gradiente médio (derivada local média)
-    gradients = np.gradient(data, axis=1)  # Derivada ao longo das bandas
-    features_dict['grad_mean'] = np.mean(np.abs(gradients), axis=1)
-
-    # 2. Gradiente máximo (máxima variação entre bandas)
-    features_dict['grad_max'] = np.max(np.abs(gradients), axis=1)
-
-    # 3. Razão primeira/última banda
-    b_first = data[:, 0]
-    b_last = data[:, -1]
-    features_dict['ratio_first_last'] = (b_last - b_first) / (b_last + b_first + 1e-8)
-
-    # 4. Razão entre quartis (Q1/Q3)
-    if n_bands >= 4:
-        q1_idx = n_bands // 4
-        q3_idx = 3 * n_bands // 4
-        b_q1 = data[:, q1_idx]
-        b_q3 = data[:, q3_idx]
-        features_dict['ratio_q1_q3'] = (b_q3 - b_q1) / (b_q3 + b_q1 + 1e-8)
-    else:
-        features_dict['ratio_q1_q3'] = np.zeros(n_samples)
-
-    # 5. Área sob a curva (integral - soma trapezoidal)
-    features_dict['area_under_curve'] = np.trapz(data, axis=1)
-
-    # 6. Amplitude espectral (range)
-    features_dict['spectral_range'] = np.max(data, axis=1) - np.min(data, axis=1)
-
-    # 7. Posição do pico máximo (índice da banda com maior valor)
-    features_dict['peak_position'] = np.argmax(data, axis=1) / n_bands  # Normalizado [0,1]
-
-    # 8. Largura espectral efetiva (número de bandas acima de 50% do máximo)
-    max_vals = np.max(data, axis=1, keepdims=True)
-    threshold = 0.5 * max_vals
-    above_threshold = (data >= threshold).sum(axis=1)
-    features_dict['spectral_width'] = above_threshold / n_bands  # Normalizado
-
-    # Criar DataFrame com features
-    features_df = pd.DataFrame(features_dict)
-
-    # Salvar resultado
-    features_df.to_csv(output_path, index=False)
-    
-    print(f"✅ Features espectrais extraídas: {output_path}")
-    print(f"   Dimensões: {features_df.shape[0]} amostras × {features_df.shape[1]} features")
-    print(f"   Features: {list(features_df.columns)}")
-
-    # Limpar arquivo intermediário
     if not KEEP_INTERMEDIATE and os.path.exists(input_path):
         os.remove(input_path)
-        print(f"🧹 Arquivo removido: {input_path}")
+        print(f"🧹 Removido: {input_path}")

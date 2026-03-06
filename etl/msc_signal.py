@@ -2,85 +2,71 @@ import os
 import pandas as pd
 import numpy as np
 
-KEEP_INTERMEDIATE = False  # ❌ Remove ROI após gerar MSC
+KEEP_INTERMEDIATE = False
 
-def apply_msc(data):
+
+def msc_signal(data: np.ndarray) -> np.ndarray:
     """
-    Aplica Multiplicative Scatter Correction (MSC)
-    
+    Aplica Multiplicative Scatter Correction (MSC).
+
+    Corrige variações de espalhamento e iluminação ajustando cada espectro
+    em relação ao espectro de referência (média de todos os espectros).
+
     Args:
-        data: matriz numpy [n_samples × n_bands]
-    
+        data: matriz [n_samples × n_bands]
+
     Returns:
-        matriz corrigida numpy [n_samples × n_bands]
+        matriz corrigida [n_samples × n_bands]
     """
-    ref = np.mean(data, axis=0)  # Espectro de referência (média)
+    ref = np.mean(data, axis=0)
     corrected = []
-    
+
     for spectrum in data:
-        # Ajuste linear: spectrum = slope * ref + intercept
         coeffs = np.polyfit(ref, spectrum, 1)
         slope, intercept = coeffs[0], coeffs[1]
-        
-        # Evitar divisão por zero
+
         if abs(slope) < 1e-10:
-            corrected.append(spectrum)  # Mantém original se slope ~ 0
+            corrected.append(spectrum)
         else:
-            corrected_spectrum = (spectrum - intercept) / slope
-            corrected.append(corrected_spectrum)
-    
+            corrected.append((spectrum - intercept) / slope)
+
     return np.array(corrected)
 
 
 def run(output_dir: str, folder_name: str):
     """
-    Aplica Multiplicative Scatter Correction (MSC) aos dados do ROI.
-    
+    Lê o CSV do ROI filtrado, aplica MSC e salva o resultado.
+
     Args:
-        output_dir: Diretório de saída
-        folder_name: Nome base do arquivo
+        output_dir: diretório onde estão os arquivos
+        folder_name: nome base da imagem
     """
-    input_path = os.path.join(output_dir, f"{folder_name}_roi.csv")
+    input_path  = os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv")
     output_path = os.path.join(output_dir, f"{folder_name}_msc_signal.csv")
 
-    # Verificar se arquivo existe
     if not os.path.exists(input_path):
-        print(f"⚠️ {input_path} não encontrado. Criando saída vazia {output_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise FileNotFoundError(f"❌ ROI não encontrado: {input_path}")
 
-    # Carregar dados
     df = pd.read_csv(input_path)
-    if df.empty:
-        print(f"⚠️ {input_path} vazio. Criando saída vazia {output_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
 
-    # Extrair apenas colunas numéricas
+    if df.empty:
+        raise ValueError(f"❌ ROI vazio: {input_path}")
+
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if len(numeric_cols) == 0:
-        print(f"⚠️ Nenhuma coluna numérica em {input_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+    if not numeric_cols:
+        raise ValueError(f"❌ Nenhuma coluna numérica em {input_path}")
 
     data = df[numeric_cols].values
 
-    # Verificar dimensões mínimas
     if data.shape[0] < 2:
-        print(f"⚠️ MSC requer pelo menos 2 amostras. Encontrado: {data.shape[0]}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise ValueError(f"❌ MSC requer pelo menos 2 amostras. Encontrado: {data.shape[0]}")
 
-    # Aplicar MSC
-    corrected = apply_msc(data)
+    corrected = msc_signal(data)
 
-    # Salvar resultado
-    df_corrected = pd.DataFrame(corrected, columns=numeric_cols)
-    df_corrected.to_csv(output_path, index=False)
+    pd.DataFrame(corrected, columns=numeric_cols).to_csv(output_path, index=False)
     print(f"✅ MSC aplicado: {output_path}")
     print(f"   Dimensões: {corrected.shape[0]} amostras × {corrected.shape[1]} bandas")
 
-    # Limpar arquivo intermediário
     if not KEEP_INTERMEDIATE and os.path.exists(input_path):
         os.remove(input_path)
-        print(f"🧹 Arquivo removido: {input_path}")
+        print(f"🧹 Removido: {input_path}")

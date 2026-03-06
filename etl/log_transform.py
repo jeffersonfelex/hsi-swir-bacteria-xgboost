@@ -1,81 +1,62 @@
+import os
 import pandas as pd
 import numpy as np
-import os
 
-KEEP_INTERMEDIATE = False  # ❌ Remove MSC após gerar Log
+KEEP_INTERMEDIATE = False
 
-def apply_log_transform(data):
+
+def log_transform(data: np.ndarray) -> np.ndarray:
     """
-    Aplica transformada logarítmica: Log(1/R) = -Log(R)
-    
-    Utilizada para realçar bandas de baixa intensidade e comprimir amplitudes,
+    Aplica transformada logarítmica Log(1/R) = -Log(R).
+
+    Realça bandas de baixa intensidade e comprime amplitudes,
     facilitando a modelagem de relações não lineares.
-    
+
     Args:
-        data: matriz numpy [n_samples × n_bands]
-    
+        data: matriz [n_samples × n_bands]
+
     Returns:
-        matriz transformada numpy [n_samples × n_bands]
+        matriz transformada [n_samples × n_bands]
     """
-    # Clonar dados para não modificar original
     data_clean = data.copy()
-    
-    # Tratar valores inválidos
-    data_clean[data_clean <= 0] = 1e-6  # Evitar log(0) ou log(negativo)
-    data_clean[np.isnan(data_clean)] = 1e-6  # Tratar NaN
-    data_clean[np.isinf(data_clean)] = 1e-6  # Tratar infinitos
-    
-    # Aplicar Log(1/R) = -Log(R)
-    transformed = -np.log(data_clean)
-    
-    return transformed
+    data_clean[data_clean <= 0]        = 1e-6
+    data_clean[np.isnan(data_clean)]   = 1e-6
+    data_clean[np.isinf(data_clean)]   = 1e-6
+
+    return -np.log(data_clean)
 
 
 def run(output_dir: str, folder_name: str):
     """
-    Aplica transformada logarítmica Log(1/R) aos dados corrigidos por MSC.
-    
+    Lê o CSV do ROI filtrado, aplica Log(1/R) e salva o resultado.
+
     Args:
-        output_dir: Diretório de saída
-        folder_name: Nome base do arquivo
+        output_dir: diretório onde estão os arquivos
+        folder_name: nome base da imagem
     """
-    input_path = os.path.join(output_dir, f"{folder_name}_msc_signal.csv")
+    input_path  = os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv")
     output_path = os.path.join(output_dir, f"{folder_name}_log.csv")
 
-    # Verificar se arquivo existe
     if not os.path.exists(input_path):
-        print(f"⚠️ {input_path} não encontrado. Criando saída vazia {output_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise FileNotFoundError(f"❌ ROI não encontrado: {input_path}")
 
-    # Carregar dados
     df = pd.read_csv(input_path)
-    if df.empty:
-        print(f"⚠️ {input_path} vazio. Criando saída vazia {output_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
 
-    # Extrair apenas colunas numéricas
+    if df.empty:
+        raise ValueError(f"❌ ROI vazio: {input_path}")
+
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if len(numeric_cols) == 0:
-        print(f"⚠️ Nenhuma coluna numérica em {input_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+    if not numeric_cols:
+        raise ValueError(f"❌ Nenhuma coluna numérica em {input_path}")
 
     data = df[numeric_cols].values
+    transformed = log_transform(data)
 
-    # Aplicar transformada logarítmica
-    transformed = apply_log_transform(data)
-
-    # Salvar resultado
-    df_transformed = pd.DataFrame(transformed, columns=numeric_cols)
-    df_transformed.to_csv(output_path, index=False)
-    
-    print(f"✅ Log transform aplicado: {output_path}")
+    pd.DataFrame(transformed, columns=numeric_cols).to_csv(output_path, index=False)
+    print(f"✅ Log(1/R) aplicado: {output_path}")
     print(f"   Dimensões: {transformed.shape[0]} amostras × {transformed.shape[1]} bandas")
     print(f"   Range: [{transformed.min():.3f}, {transformed.max():.3f}]")
 
-    # Limpar arquivo intermediário
     if not KEEP_INTERMEDIATE and os.path.exists(input_path):
         os.remove(input_path)
-        print(f"🧹 Arquivo removido: {input_path}")
+        print(f"🧹 Removido: {input_path}")

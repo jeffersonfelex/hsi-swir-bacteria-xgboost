@@ -1,97 +1,78 @@
-"""
-Derivada de Savitzky-Golay usando scipy
-=======================================
-Conforme plano de trabalho: janela=15, grau 2, 1ª derivada
-"""
 import os
 import pandas as pd
 import numpy as np
 from scipy.signal import savgol_filter
 
-KEEP_INTERMEDIATE = False  # Remove arquivo Log após derivada
+KEEP_INTERMEDIATE = False
+
+WINDOW_LENGTH = 15
+POLYORDER     = 2
+DERIV         = 1
+
+
+def derivative_transform(data: np.ndarray) -> np.ndarray:
+    """
+    Aplica derivada de primeira ordem via filtro Savitzky-Golay.
+
+    Parâmetros conforme plano de trabalho:
+        - window_length : 15 pontos
+        - polyorder     : grau 2
+        - deriv         : 1ª ordem
+
+    Destaca inflexões espectrais e minimiza o efeito de baseline.
+
+    Args:
+        data: matriz [n_samples × n_bands]
+
+    Returns:
+        matriz transformada [n_samples × n_bands]
+    """
+    n_bands = data.shape[1]
+    window  = WINDOW_LENGTH
+
+    if n_bands < window:
+        window = n_bands if n_bands % 2 == 1 else n_bands - 1
+        print(f"⚠️ window_length ajustado para {window} (n_bands={n_bands})")
+
+    if window < 5:
+        raise ValueError(f"❌ Bandas insuficientes para Savitzky-Golay ({n_bands} < 5)")
+
+    # axis=1 → derivada ao longo das bandas (eixo espectral), não das amostras
+    return savgol_filter(data, window_length=window, polyorder=POLYORDER, deriv=DERIV, axis=1)
 
 
 def run(output_dir: str, folder_name: str):
     """
-    Aplica derivada de primeira ordem usando filtro Savitzky-Golay.
-    
-    Parâmetros (conforme plano de trabalho):
-        - Janela: 15 pontos
-        - Polinômio: grau 2
-        - Derivada: 1ª ordem
-    
+    Lê o CSV do ROI filtrado, aplica Savitzky-Golay e salva o resultado.
+
     Args:
-        output_dir: Diretório de saída
-        folder_name: Nome base do arquivo
+        output_dir: diretório onde estão os arquivos
+        folder_name: nome base da imagem
     """
-    input_path = os.path.join(output_dir, f"{folder_name}_log.csv")
+    input_path  = os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv")
     output_path = os.path.join(output_dir, f"{folder_name}_derivada.csv")
 
-    # Verificar se arquivo existe
     if not os.path.exists(input_path):
-        print(f"⚠️ {input_path} não encontrado. Criando saída vazia.")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise FileNotFoundError(f"❌ ROI não encontrado: {input_path}")
 
-    # Carregar dados
     df = pd.read_csv(input_path)
+
     if df.empty:
-        print(f"⚠️ {input_path} vazio. Criando saída vazia.")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise ValueError(f"❌ ROI vazio: {input_path}")
 
-    # Extrair apenas colunas numéricas
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if len(numeric_cols) == 0:
-        print(f"⚠️ Nenhuma coluna numérica em {input_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+    if not numeric_cols:
+        raise ValueError(f"❌ Nenhuma coluna numérica em {input_path}")
 
-    data = df[numeric_cols].values
-    n_samples, n_bands = data.shape
+    data        = df[numeric_cols].values
+    transformed = derivative_transform(data)
 
-    # Parâmetros Savitzky-Golay (conforme plano de trabalho)
-    window_size = 15
-    polynomial_order = 2
+    pd.DataFrame(transformed, columns=numeric_cols).to_csv(output_path, index=False)
+    print(f"✅ Savitzky-Golay aplicado: {output_path}")
+    print(f"   Dimensões : {transformed.shape[0]} amostras × {transformed.shape[1]} bandas")
+    print(f"   Parâmetros: window={WINDOW_LENGTH}, polyorder={POLYORDER}, deriv={DERIV}")
+    print(f"   Range     : [{transformed.min():.6f}, {transformed.max():.6f}]")
 
-    # Validar dimensões mínimas
-    if n_bands < window_size:
-        print(f"⚠️ Savitzky-Golay requer pelo menos {window_size} bandas.")
-        print(f"   Encontrado: {n_bands} bandas. Ajustando window_size...")
-        window_size = n_bands if n_bands % 2 == 1 else n_bands - 1
-        
-        if window_size < 5:
-            print(f"❌ Número de bandas insuficiente ({n_bands} < 5)")
-            pd.DataFrame().to_csv(output_path, index=False)
-            return
-
-    # Garantir que window_size seja ímpar
-    if window_size % 2 == 0:
-        window_size += 1
-
-    # Aplicar derivada Savitzky-Golay (1ª ordem) usando scipy
-    try:
-        transformed = savgol_filter(
-            data, 
-            window_length=window_size, 
-            polyorder=polynomial_order, 
-            deriv=1,   # 1ª derivada
-            axis=1     # Aplicar ao longo das bandas (colunas)
-        )
-    except Exception as e:
-        print(f"❌ Erro ao aplicar Savitzky-Golay: {e}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
-
-    # Salvar resultado
-    df_transformed = pd.DataFrame(transformed, columns=numeric_cols)
-    df_transformed.to_csv(output_path, index=False)
-    
-    print(f"✅ Derivada Savitzky-Golay aplicada: {output_path}")
-    print(f"   Dimensões: {transformed.shape[0]} amostras × {transformed.shape[1]} bandas")
-    print(f"   Parâmetros: window={window_size}, poly_order={polynomial_order}, deriv=1")
-
-    # Limpar arquivo intermediário
     if not KEEP_INTERMEDIATE and os.path.exists(input_path):
         os.remove(input_path)
-        print(f"🧹 Arquivo removido: {input_path}")
+        print(f"🧹 Removido: {input_path}")

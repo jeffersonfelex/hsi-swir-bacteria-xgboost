@@ -2,75 +2,75 @@ import os
 import pandas as pd
 import numpy as np
 
-KEEP_INTERMEDIATE = False  # ❌ Remove derivada após extrair features
+KEEP_INTERMEDIATE = False
 
-def run(output_dir: str, folder_name: str):
+
+def descriptive_stats(data: np.ndarray) -> pd.DataFrame:
     """
-    Extrai features estatísticas descritivas de cada espectro.
-    
+    Extrai estatísticas descritivas de cada espectro ao longo das bandas.
+
     Para cada amostra (linha), calcula:
-    - Média das bandas
-    - Desvio padrão das bandas
-    - Mínimo das bandas
-    - Máximo das bandas
-    - Mediana das bandas
-    - Skewness (assimetria) das bandas
-    - Kurtosis (curtose) das bandas
-    
+        - mean     : média das bandas
+        - std      : desvio padrão das bandas
+        - min      : valor mínimo
+        - max      : valor máximo
+        - median   : mediana
+        - skewness : assimetria
+        - kurtosis : curtose
+
     Args:
-        output_dir: Diretório de saída
-        folder_name: Nome base do arquivo
+        data: matriz [n_samples × n_bands]
+
+    Returns:
+        DataFrame [n_samples × 7] com prefixo 'desc_' nas colunas
     """
-    # ✅ CORRETO: Ler arquivo após derivada
-    input_path = os.path.join(output_dir, f"{folder_name}_derivada.csv")
+    if data.shape[0] == 0:
+        raise ValueError("❌ descriptive_stats recebeu array vazio.")
+
+    df_data = pd.DataFrame(data)
+
+    return pd.DataFrame({
+        "desc_mean":     np.mean(data, axis=1),
+        "desc_std":      np.std(data, axis=1),
+        "desc_min":      np.min(data, axis=1),
+        "desc_max":      np.max(data, axis=1),
+        "desc_median":   np.median(data, axis=1),
+        "desc_skewness": df_data.skew(axis=1).values,
+        "desc_kurtosis": df_data.kurtosis(axis=1).values,
+    })
+
+
+def run(output_dir: str, folder_name: str, suffix: str = "derivada"):
+    """
+    Lê um CSV de espectros, aplica descriptive_stats e salva o resultado.
+
+    Args:
+        output_dir: diretório onde estão os arquivos
+        folder_name: nome base da imagem
+        suffix: sufixo do arquivo de entrada (default: 'derivada')
+    """
+    input_path  = os.path.join(output_dir, f"{folder_name}_{suffix}.csv")
     output_path = os.path.join(output_dir, f"{folder_name}_features_descriptive.csv")
 
-    # Verificar se arquivo existe
     if not os.path.exists(input_path):
-        print(f"⚠️ {input_path} não encontrado. Pulando features descritivas.")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise FileNotFoundError(f"❌ Arquivo não encontrado: {input_path}")
 
-    # Carregar dados
     df = pd.read_csv(input_path)
+
     if df.empty:
-        print(f"⚠️ {input_path} vazio. Pulando features descritivas.")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+        raise ValueError(f"❌ Arquivo vazio: {input_path}")
 
-    # Extrair apenas colunas numéricas
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if len(numeric_cols) == 0:
-        print(f"⚠️ Nenhuma coluna numérica em {input_path}")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
+    if not numeric_cols:
+        raise ValueError(f"❌ Nenhuma coluna numérica em {input_path}")
 
-    data = df[numeric_cols].values
-    n_samples = data.shape[0]
-
-    # ✅ CORRETO: Calcular estatísticas POR AMOSTRA (ao longo das bandas)
-    stats_dict = {
-        'mean': np.mean(data, axis=1),           # Média de cada espectro
-        'std': np.std(data, axis=1),             # Desvio padrão de cada espectro
-        'min': np.min(data, axis=1),             # Mínimo de cada espectro
-        'max': np.max(data, axis=1),             # Máximo de cada espectro
-        'median': np.median(data, axis=1),       # Mediana de cada espectro
-        'skewness': pd.DataFrame(data).skew(axis=1).values,    # ✅ Assimetria
-        'kurtosis': pd.DataFrame(data).kurtosis(axis=1).values # ✅ Curtose
-    }
-
-    # Criar DataFrame com features descritivas
-    # Formato: 1 linha por amostra, 1 coluna por estatística
-    stats_df = pd.DataFrame(stats_dict)
-
-    # Salvar resultado
+    stats_df = descriptive_stats(df[numeric_cols].values)
     stats_df.to_csv(output_path, index=False)
-    
-    print(f"✅ Features descritivas extraídas: {output_path}")
-    print(f"   Dimensões: {stats_df.shape[0]} amostras × {stats_df.shape[1]} features")
-    print(f"   Features: {list(stats_df.columns)}")
 
-    # Limpar arquivo intermediário
+    print(f"✅ Features descritivas extraídas: {output_path}")
+    print(f"   Dimensões : {stats_df.shape[0]} amostras × {stats_df.shape[1]} features")
+    print(f"   Features  : {list(stats_df.columns)}")
+
     if not KEEP_INTERMEDIATE and os.path.exists(input_path):
         os.remove(input_path)
-        print(f"🧹 Arquivo removido: {input_path}")
+        print(f"🧹 Removido: {input_path}")

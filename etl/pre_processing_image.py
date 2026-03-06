@@ -26,7 +26,7 @@ def run(output_dir: str, folder_name: str):
     
     # Verificar se arquivo existe
     if not os.path.exists(input_path):
-        print(f"⚠️ {input_path} não encontrado. Criando saída vazia {output_path}")
+        print(f"{input_path} não encontrado. Criando saída vazia {output_path}")
         pd.DataFrame().to_csv(output_path, index=False)
         return
     
