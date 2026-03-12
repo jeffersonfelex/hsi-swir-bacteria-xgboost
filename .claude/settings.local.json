@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"c:\\\\Users\\\\Jefferson\\\\Documents\\\\GitHub\\\\ic-2025\\\\features_selected\"\" 2>/dev/null || echo \"DIRETÓRIO NÃO EXISTE \")"
+    ]
+  }
+}

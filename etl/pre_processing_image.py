@@ -182,7 +182,7 @@ def run(output_dir: str, folder_name: str):
 
 
 if __name__ == "__main__":
-    output_dir = "/mnt/c/Users/jefferson.faria/Documents/GitHub/ic-2025/dataSet/hsi_original"
+    output_dir = r"C:\Users\Jefferson\Documents\GitHub\ic-2025\dataSet\hsi_original"
     folder_name = "351_1_240506-160920"
-    
+
     run(output_dir, folder_name)

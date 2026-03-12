@@ -3,9 +3,9 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 # 📁 Caminhos
-BASE_DIR = "/mnt/c/Users/jefferson.faria/Documents/GitHub/ic-2025"
-DATASET_PATH = f"{BASE_DIR}/dataSet/data-preProcessed/processed/features/dataset_final.csv"
-OUTPUT_DIR = f"{BASE_DIR}/ml/data"
+BASE_DIR     = r"C:\Users\Jefferson\Documents\GitHub\ic-2025"
+DATASET_PATH = os.path.join(BASE_DIR, "dataSet", "data-preProcessed", "processed", "features", "dataset_final.csv")
+OUTPUT_DIR   = os.path.join(BASE_DIR, "ml", "data")
 
 def main():
     print(f"📥 Lendo dataset de: {DATASET_PATH}")

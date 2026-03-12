@@ -10,9 +10,9 @@ from xgboost import XGBClassifier
 from utils import ensure_dir, save_json, load_model_xgb, plot_feature_importance
 
 # 📂 Diretórios
-BASE_DIR = "/mnt/c/Users/jefferson.faria/Documents/GitHub/ic-2025/ml"
-DATA_DIR = os.path.join(BASE_DIR, "data")
-MODEL_DIR = os.path.join(BASE_DIR, "models")
+BASE_DIR   = r"C:\Users\Jefferson\Documents\GitHub\ic-2025\ml"
+DATA_DIR   = os.path.join(BASE_DIR, "data")
+MODEL_DIR  = os.path.join(BASE_DIR, "models")
 REPORT_DIR = os.path.join(BASE_DIR, "reports")
 ensure_dir(REPORT_DIR)
 

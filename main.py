@@ -13,7 +13,7 @@ from etl import (
     label_by_atcc
 )
 
-BASE_DIR     = r"C:\Users\jefferson.faria\Documents\GitHub\ic-2025"
+BASE_DIR     = r"C:\Users\Jefferson\Documents\GitHub\ic-2025"
 HSI_ROOT     = os.path.join(BASE_DIR, "dataSet", "hsi_original")
 OUTPUT_BASE  = os.path.join(BASE_DIR, "dataSet", "data-preProcessed", "pre_processing")
 FEATURES_DIR = os.path.join(BASE_DIR, "features_selected")
