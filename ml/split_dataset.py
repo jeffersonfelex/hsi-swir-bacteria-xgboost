@@ -1,51 +1,88 @@
 import os
 import pandas as pd
-from sklearn.model_selection import train_test_split
+import numpy as np
+from sklearn.model_selection import GroupShuffleSplit
 
-# 📁 Caminhos
+# Caminhos
 BASE_DIR     = r"C:\Users\Jefferson\Documents\GitHub\ic-2025"
-DATASET_PATH = os.path.join(BASE_DIR, "dataSet", "data-preProcessed", "processed", "features", "dataset_final.csv")
+FEATURES_DIR = os.path.join(BASE_DIR, "features_selected")
 OUTPUT_DIR   = os.path.join(BASE_DIR, "ml", "data")
 
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Pipelines disponíveis
+PIPELINES = [
+    "msc_mi", "msc_xgb",
+    "log_mi", "log_xgb",
+    "deriv_mi", "deriv_xgb",
+    "raw_mi", "raw_xgb",
+]
+
+
+def split_by_image(pipeline_name: str) -> None:
+    """
+    Divide o dataset em treino (70%) e teste (30%) por IMAGEM (sample_id),
+    não por pixel. Isso garante que pixels da mesma imagem não apareçam
+    simultaneamente no treino e no teste — evitando pseudo-replicação.
+
+    A divisão é estratificada por label para manter a proporção de classes.
+    """
+    dataset_path = os.path.join(FEATURES_DIR, f"dataset_{pipeline_name}.csv")
+    if not os.path.exists(dataset_path):
+        print(f"  Dataset não encontrado: {dataset_path}")
+        return
+
+    df = pd.read_csv(dataset_path)
+
+    if "sample_id" not in df.columns or "label" not in df.columns:
+        raise ValueError(f"Dataset {pipeline_name} deve conter 'sample_id' e 'label'.")
+
+    # --- Agregar label por imagem (uma imagem = um label) ---
+    image_labels = df.groupby("sample_id")["label"].first().reset_index()
+    grupos = image_labels["sample_id"].values
+    labels = image_labels["label"].values
+
+    print(f"\n  Pipeline: {pipeline_name}")
+    print(f"  Total de imagens (grupos): {len(grupos)}")
+    print(f"  Distribuição de labels por imagem: {dict(zip(*np.unique(labels, return_counts=True)))}")
+
+    # GroupShuffleSplit garante que imagens inteiras ficam num único conjunto
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.30, random_state=42)
+    train_idx, test_idx = next(gss.split(grupos, labels, groups=grupos))
+
+    train_images = set(grupos[train_idx])
+    test_images  = set(grupos[test_idx])
+
+    df_train = df[df["sample_id"].isin(train_images)].reset_index(drop=True)
+    df_test  = df[df["sample_id"].isin(test_images)].reset_index(drop=True)
+
+    # Salvar
+    train_path = os.path.join(OUTPUT_DIR, f"train_{pipeline_name}.csv")
+    test_path  = os.path.join(OUTPUT_DIR, f"test_{pipeline_name}.csv")
+
+    df_train.to_csv(train_path, index=False)
+    df_test.to_csv(test_path,  index=False)
+
+    print(f"  Treino: {len(df_train)} pixels de {len(train_images)} imagens")
+    print(f"  Teste : {len(df_test)} pixels de {len(test_images)} imagens")
+    print(f"  Distribuição treino: {dict(zip(*np.unique(df_train['label'], return_counts=True)))}")
+    print(f"  Distribuição teste : {dict(zip(*np.unique(df_test['label'], return_counts=True)))}")
+    print(f"  Salvo: {train_path}")
+    print(f"  Salvo: {test_path}")
+
+
 def main():
-    print(f"📥 Lendo dataset de: {DATASET_PATH}")
-    df = pd.read_csv(DATASET_PATH)
+    print("Divisão treino/teste por imagem (sem vazamento entre grupos)")
+    print("=" * 60)
 
-    # 📊 Verifica se 'label' existe
-    if "label" not in df.columns:
-        raise ValueError("❌ Coluna 'label' não encontrada no dataset_final.csv.")
+    for pipeline in PIPELINES:
+        try:
+            split_by_image(pipeline)
+        except Exception as e:
+            print(f"  Erro em {pipeline}: {e}")
 
-    # 🧹 Separa features e target
-    X = df.drop(columns=["label", "filename"], errors="ignore")
-    y = df["label"]
+    print("\nDivisão concluída para todos os pipelines.")
 
-    # ✂️ Divide em treino (70%) e teste (30%)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.3,          # 📌 30% teste
-        random_state=42,
-        stratify=y
-    )
-
-    # 📂 Cria diretório de saída
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    # 💾 Salva conjuntos
-    train_df = X_train.copy()
-    train_df["label"] = y_train
-    train_df.to_csv(os.path.join(OUTPUT_DIR, "train.csv"), index=False)
-
-    test_df = X_test.copy()
-    test_df["label"] = y_test
-    test_df.to_csv(os.path.join(OUTPUT_DIR, "test.csv"), index=False)
-
-    print(f"✅ Treino salvo em: {os.path.join(OUTPUT_DIR, 'train.csv')} ({len(train_df)} linhas)")
-    print(f"✅ Teste salvo em: {os.path.join(OUTPUT_DIR, 'test.csv')} ({len(test_df)} linhas)")
-
-    # 📊 Estatísticas de distribuição
-    print("\n📊 Distribuição de classes:")
-    print("Treino:\n", y_train.value_counts())
-    print("Teste:\n", y_test.value_counts())
 
 if __name__ == "__main__":
     main()
