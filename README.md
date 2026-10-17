@@ -17,9 +17,9 @@ ROI (segmentação da colônia)
  ├─ log   : Log(1/R)
  └─ deriv : 1ª derivada Savitzky-Golay (janela 15, grau 2)
       └─ atributos por pixel (spec_ + idx_ = 23 após remover desc_* e *_area_norm)
-      └─ seleção MI / XGB-FI  →  8 datasets em features_selected/
+      └─ 4 datasets completos em features_selected/ (sem seleção)
 split por imagem 70/30 (estratificado por classe)
- → StandardScaler → PCA (95% var.) → XGBoost, Grid Search (324 comb.), StratifiedGroupKFold
+ → seleção MI / XGB-FI (só no treino, refeita a cada fold) → StandardScaler → PCA (95% var.) → XGBoost, Grid Search (324 comb.), StratifiedGroupKFold
  → avaliação única no teste externo (pixel e imagem)
 ```
 
@@ -34,14 +34,15 @@ python -m pytest tests               # testes das garantias de validação
 
 Etapas isoladas: `python run.py etl | split | train | evaluate`. Dados HSI em
 `dataSet/hsi_original/` (não versionado). Variáveis: `IC2025_BASE_DIR`, `IC2025_GRID=fast`,
-`IC2025_MAX_PIXELS_PER_IMG`, `IC2025_FORCE_CPU=1`.
+`IC2025_MAX_PIXELS_PER_IMG`, `IC2025_SELECAO_MAX_AMOSTRAS`, `IC2025_FORCE_CPU=1`.
 
 ### Estrutura
 
 | Caminho | Conteúdo |
 |---|---|
-| `main.py`, `etl/` | ETL: ROI, transformações, atributos, rotulagem (ATCC = 1), seleção |
-| `ml/split_dataset.py` | Split treino/teste por imagem |
+| `main.py`, `etl/` | ETL: ROI, transformações, atributos, rotulagem (ATCC = 1) |
+| `ml/split_dataset.py` | Split treino/teste por imagem (por branch) |
+| `ml/selection.py` | Seleção MI / XGB-FI como etapa do Pipeline (ajustada só no treino) |
 | `ml/train.py` | Grid Search + CV por grupo; salva modelo e `pipeline_*.joblib` |
 | `ml/evaluate.py` | Teste externo (pixel e imagem) |
 | `ml/results/` | CSVs e boxplots da CV |

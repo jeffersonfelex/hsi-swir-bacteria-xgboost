@@ -12,8 +12,8 @@ Fluxo (por imagem):
      ->  engenharia de atributos (desc + spec + idx) POR BRANCH (msc/log/deriv)
      ->  raw usa as bandas diretamente
      ->  rotulagem por ATCC
-     ->  selecao de features (MI e depois XGBoost) POR BRANCH
-     ->  8 datasets em features_selected/: dataset_<branch>_<mi|xgb>.csv
+     ->  4 datasets completos em features_selected/: dataset_<branch>.csv
+     ->  (split por imagem -> selecao MI / XGB-FI so no treino, dentro do Pipeline de ml/train.py)
 
 Observacao: nas versoes anteriores os 4 branches eram encadeados
 (msc -> log -> deriv) e apenas a derivada virava feature, o que tornava
@@ -44,8 +44,6 @@ from etl.derivative_transform import derivative_transform
 from etl.descriptive_stats import descriptive_stats
 from etl.spectral_features import spectral_features
 from etl.index_features import index_features
-from etl.feature_selection_mi import feature_selection_mi
-from etl.feature_selection_xgboost import feature_selection_xgboost
 from etl.label_by_atcc import label_by_atcc
 
 
@@ -251,53 +249,6 @@ def combinar_branch(branch: str, folders: list) -> pd.DataFrame:
 
 
 # ============================================================================
-# FASE 3 — selecao de features por branch
-# ============================================================================
-
-def selecionar_e_salvar(branch: str, df: pd.DataFrame) -> None:
-    feature_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c != "label"]
-    X = df[feature_cols].fillna(0).values
-    y = df["label"].values
-    sid = df["sample_id"].values
-
-    if len(np.unique(y)) < 2:
-        logger.warning(f"   {branch}: labels sem variabilidade — selecao pulada.")
-        return
-
-    base = df.reset_index(drop=True)
-
-    def _montar(nomes: list) -> pd.DataFrame:
-        out = base[nomes].copy()
-        out.insert(0, "sample_id", sid)
-        out["label"] = y
-        return out
-
-    # MI
-    _, names_mi = feature_selection_mi(X, y, feature_cols)
-    if len(names_mi) == len(feature_cols):
-        logger.warning(f"   {branch}: MI manteve TODAS as {len(feature_cols)} features "
-                       f"(MI_TOP_N >= n_features) - a selecao nao filtra nada.")
-    path_mi = os.path.join(config.FEATURES_DIR, f"dataset_{branch}_mi.csv")
-    _montar(names_mi).to_csv(path_mi, index=False)
-    logger.info(f"   salvo: {os.path.basename(path_mi)}  ({len(names_mi)} features)")
-
-    # XGBoost importance (sobre as features do MI)
-    X_mi = base[names_mi].fillna(0).values
-    _, names_xgb = feature_selection_xgboost(X_mi, y, names_mi)
-    if len(names_xgb) == len(names_mi):
-        logger.warning(f"   {branch}: XGB-FI manteve TODAS as {len(names_mi)} features "
-                       f"- datasets _mi e _xgb sao identicos.")
-    path_xgb = os.path.join(config.FEATURES_DIR, f"dataset_{branch}_xgb.csv")
-    _montar(names_xgb).to_csv(path_xgb, index=False)
-    logger.info(f"   salvo: {os.path.basename(path_xgb)}  ({len(names_xgb)} features)")
-
-    pd.DataFrame({"feature": names_mi, "rank": range(1, len(names_mi) + 1)}).to_csv(
-        os.path.join(config.FEATURES_DIR, f"features_selected_{branch}_mi.csv"), index=False)
-    pd.DataFrame({"feature": names_xgb, "rank": range(1, len(names_xgb) + 1)}).to_csv(
-        os.path.join(config.FEATURES_DIR, f"features_selected_{branch}_xgb.csv"), index=False)
-
-
-# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -339,7 +290,7 @@ def main():
         logger.error("Nenhuma imagem processada. Abortando.")
         sys.exit(1)
 
-    # ---- FASE 2 + 3 ----
+    # ---- FASE 2 (combinar + rotular; a selecao de atributos ocorre depois do split) ----
     for branch in ALL_BRANCHES:
         logger.info(f"\n{'='*70}\nBRANCH: {branch.upper()}\n{'='*70}")
         try:
@@ -352,14 +303,14 @@ def main():
         logger.info(f"   {len(df)} pixels | resistentes {n_pos} | sensiveis {len(df) - n_pos} "
                     f"| imagens {df['sample_id'].nunique()}")
 
-        # dataset combinado do branch (antes da selecao) — util para auditoria
+        # dataset combinado do branch. NAO ha selecao de atributos aqui: ela e feita
+        # depois do split, so no treino (ml/selection.py, etapa do Pipeline em ml/train.py).
         df.to_csv(os.path.join(config.FEATURES_DIR, f"dataset_{branch}.csv"), index=False)
 
-        selecionar_e_salvar(branch, df)
 
     logger.info(f"\n{'='*70}\nPIPELINE ETL FINALIZADO\n{'='*70}")
     logger.info("Datasets em features_selected/: " +
-                ", ".join(f"dataset_{b}_{s}.csv" for b in ALL_BRANCHES for s in ("mi", "xgb")))
+                ", ".join(f"dataset_{b}.csv" for b in ALL_BRANCHES))
     logger.info("Proximos passos: python ml/split_dataset.py -> python ml/train.py -> python ml/evaluate.py")
     logger.info(f"Fim: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
