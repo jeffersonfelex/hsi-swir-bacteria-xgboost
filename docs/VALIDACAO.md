@@ -35,7 +35,7 @@ Conferido contra o código em `chore/baseline-pipeline-v2` e o dataset local em 
 
 | Pendência do guia | Situação |
 |---|---|
-| Confirmar que a seleção MI/XGB-FI usa só treino | **Não é verdade hoje.** `main.py` seleciona sobre *todas* as imagens (incl. teste) antes do split. Para msc/log/deriv é inócuo (nada é filtrado), mas em **raw** (256→100→50 bandas) há vazamento de rótulo do teste. Correção correta: mover a seleção para depois do split (dentro da CV). Não aplicada aqui por mudar os resultados |
+| Confirmar que a seleção MI/XGB-FI usa só treino | **Corrigido.** Antes, `main.py` selecionava sobre *todas* as imagens (incl. teste) antes do split — vazamento de rótulo em **raw** (256→100→50 bandas). Agora `main.py` só grava `dataset_<branch>.csv` (4 arquivos, sem seleção); `ml/split_dataset.py` divide por imagem uma vez por branch; a seleção é a etapa `SelecaoMIXGB` (`ml/selection.py`) do `Pipeline` (`selecao → scaler → PCA → XGBoost`), **reajustada a cada fold** só com o fold de treino e, no refit final, só com o treino externo. O `pipeline_*.joblib` carrega as colunas escolhidas e `ml/evaluate.py` apenas as aplica ao teste. Coberto por testes sintéticos (`tests/test_validation.py`). **Efeito nos números:** os resultados versionados em `ml/results` foram gerados com a seleção antiga — refazer `split → train → evaluate`; raw tende a piorar (menos otimista) |
 | MSC com média só do treino | MSC usa a média **da própria imagem** (por ROI), não global. Não há vazamento de rótulo, mas difere do descrito |
 | `scale_pos_weight` usado? | **Não** é usado em `train.py` (razão atual ≈ 6,9 : 1, não 4,3) |
 | Grid Search refit por recall | `refit="recall"` favorece limiar permissivo; considerar AUPRC e CV aninhada |
@@ -51,7 +51,12 @@ Conferido contra o código em `chore/baseline-pipeline-v2` e o dataset local em 
 - `.pyc` e `.claude/settings.local.json` estavam versionados; `ml/data` (~5 GB) segue ignorado.
 - `requirements.txt` listava keras/catboost/lightgbm/sqlalchemy etc. que não são importados.
 - `scripts/paper_figures.py` tinha prevalência hardcoded (0,13) diferente do dataset.
-- 15 testes em `tests/`.
+- 23 testes em `tests/`.
+- Seleção de atributos movida para depois do split (ver acima). Detalhes de implementação: MI/XGB-FI são
+  ajustados em até `IC2025_SELECAO_MAX_AMOSTRAS` pixels (padrão 50.000, subamostra determinística só do treino; `0` = todos)
+  para não repetir MI (kNN) em ~1 M pixels a cada fold; o `Pipeline(memory=...)` evita refazê-la a cada combinação do grid.
+  O filtro `desc_*`/`*_area_norm` agora precede a seleção. Em msc/log/deriv (23 atributos < `MI_TOP_N`) a seleção continua sem filtrar nada.
+  Artefatos novos: `ml/data/train_<branch>.csv`/`test_<branch>.csv` (um por branch) e `ml/results/features_selected_<pipeline>.csv`.
 
 **Nota:** os modelos/resultados versionados em `ml/` vêm da execução anterior; rode
 `python run.py train` para gerar `pipeline_*.joblib` e CSVs com a nova lógica de NaN.
