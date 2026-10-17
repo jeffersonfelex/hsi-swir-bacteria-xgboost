@@ -274,6 +274,9 @@ def selecionar_e_salvar(branch: str, df: pd.DataFrame) -> None:
 
     # MI
     _, names_mi = feature_selection_mi(X, y, feature_cols)
+    if len(names_mi) == len(feature_cols):
+        logger.warning(f"   {branch}: MI manteve TODAS as {len(feature_cols)} features "
+                       f"(MI_TOP_N >= n_features) - a selecao nao filtra nada.")
     path_mi = os.path.join(config.FEATURES_DIR, f"dataset_{branch}_mi.csv")
     _montar(names_mi).to_csv(path_mi, index=False)
     logger.info(f"   salvo: {os.path.basename(path_mi)}  ({len(names_mi)} features)")
@@ -281,6 +284,9 @@ def selecionar_e_salvar(branch: str, df: pd.DataFrame) -> None:
     # XGBoost importance (sobre as features do MI)
     X_mi = base[names_mi].fillna(0).values
     _, names_xgb = feature_selection_xgboost(X_mi, y, names_mi)
+    if len(names_xgb) == len(names_mi):
+        logger.warning(f"   {branch}: XGB-FI manteve TODAS as {len(names_mi)} features "
+                       f"- datasets _mi e _xgb sao identicos.")
     path_xgb = os.path.join(config.FEATURES_DIR, f"dataset_{branch}_xgb.csv")
     _montar(names_xgb).to_csv(path_xgb, index=False)
     logger.info(f"   salvo: {os.path.basename(path_xgb)}  ({len(names_xgb)} features)")

@@ -30,3 +30,10 @@ ml/reports/
 # Sistema Operacional
 .DS_Store
 Thumbs.db
+
+# Splits e artefatos pesados regenerados por 'python run.py split|train'
+ml/data/
+ml/models/*.joblib
+
+# Configuracao local do Claude Code
+.claude/settings.local.json

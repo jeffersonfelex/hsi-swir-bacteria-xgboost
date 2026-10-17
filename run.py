@@ -57,8 +57,6 @@ def check_env():
         ("cv2", "OpenCV"),
         ("matplotlib", "Matplotlib"),
         ("seaborn", "Seaborn"),
-        ("lightgbm", "LightGBM"),
-        ("catboost", "CatBoost"),
         ("jupyter", "Jupyter"),
     ]
     

@@ -11,7 +11,10 @@ RESULTS = os.path.join(BASE, "ml", "results")
 OUT = os.path.join(BASE, "figures")
 os.makedirs(OUT, exist_ok=True)
 ATCC_PREFIXES = ["ATCC13", "ATCC16", "ATCC27"]
-PRIOR = 113279 / (113279 + 744724)  # resistant-class prior (~0.13)
+# Resistant-class prior (pixel prevalence), read from the current dataset
+# instead of a hardcoded count that goes stale when the ETL is re-run.
+PRIOR = float(pd.read_csv(os.path.join(BASE, "features_selected", "dataset_msc.csv"),
+                          usecols=["label"])["label"].mean())
 
 
 def mean_spectrum(folder):

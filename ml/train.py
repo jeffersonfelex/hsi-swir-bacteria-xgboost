@@ -30,6 +30,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import joblib
 import scipy.stats as stats
 
 from datetime import timedelta
@@ -39,7 +40,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
-    f1_score, recall_score, roc_auc_score,
+    f1_score, recall_score, precision_score, roc_auc_score,
     confusion_matrix, average_precision_score,
 )
 from xgboost import XGBClassifier
@@ -143,13 +144,44 @@ def detectar_dispositivo() -> str:
 
 
 def ic95(scores: list) -> tuple:
+    """IC95% (t de Student) da media por fold, limitado a [0, 1].
+
+    Com poucos folds (n < 3) e folds nao independentes (pixels da mesma
+    cepa), o intervalo t e instavel (com n=2 chega a [-1.8, 2.2]); nesse caso
+    devolve NaN e a leitura correta e olhar os scores por fold.
+    """
+    scores = np.asarray([v for v in scores if v == v], dtype=float)
     n = len(scores)
-    if n < 2:
+    if n < 3:
         return (float("nan"), float("nan"))
     se = stats.sem(scores)
     h = se * stats.t.ppf(0.975, df=n - 1)
     m = np.mean(scores)
-    return (round(float(m - h), 4), round(float(m + h), 4))
+    return (round(float(max(0.0, m - h)), 4), round(float(min(1.0, m + h)), 4))
+
+
+def _scorer(fn, usar_proba: bool = False):
+    """Scorer que devolve NaN (metrica indefinida) se a validacao nao tem as 2 classes.
+
+    O scikit-learn registra 0 para recall/AUPRC num fold sem positivos; esse 0
+    nao e desempenho ruim, e ausencia de dado, e puxaria a media para baixo.
+    """
+    def score(est, X, y):
+        y = np.asarray(y)
+        if y.sum() == 0 or y.sum() == len(y):
+            return float("nan")
+        saida = est.predict_proba(X)[:, 1] if usar_proba else est.predict(X)
+        return float(fn(y, saida))
+    return score
+
+
+SCORING_CV = {
+    "recall":            _scorer(lambda y, p: recall_score(y, p, zero_division=0)),
+    "f1":                _scorer(lambda y, p: f1_score(y, p, zero_division=0)),
+    "precision":         _scorer(lambda y, p: precision_score(y, p, zero_division=0)),
+    "roc_auc":           _scorer(roc_auc_score, usar_proba=True),
+    "average_precision": _scorer(average_precision_score, usar_proba=True),
+}
 
 
 def n_splits_para(y: np.ndarray, grupos: np.ndarray) -> int:
@@ -161,6 +193,12 @@ def n_splits_para(y: np.ndarray, grupos: np.ndarray) -> int:
     return int(max(1, min(MAX_SPLITS, min(counts))))
 
 
+def _nan_ou(fn, scores) -> float:
+    if np.all(np.isnan(scores)):
+        return float("nan")
+    return round(float(fn(scores)), 4)
+
+
 def analisar_folds(cv_results: dict, nome: str) -> dict:
     metricas_fold = {}
     for chave in [k for k in cv_results if k.startswith("test_")]:
@@ -169,11 +207,11 @@ def analisar_folds(cv_results: dict, nome: str) -> dict:
         ci = ic95(scores)
         metricas_fold[nome_metrica] = {
             "scores_por_fold": [round(s, 4) for s in scores],
-            "media":          round(float(np.mean(scores)), 4),
-            "std":            round(float(np.std(scores)), 4),
+            "media":          _nan_ou(np.nanmean, scores),
+            "std":            _nan_ou(np.nanstd, scores),
             "ic95_lower":     ci[0],
             "ic95_upper":     ci[1],
-            "folds_com_zero": [i for i, s in enumerate(scores) if s == 0.0],
+            "folds_indefinidos": [i for i, v in enumerate(scores) if v != v],
         }
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -182,7 +220,9 @@ def analisar_folds(cv_results: dict, nome: str) -> dict:
         axes, ["recall", "f1"], ["Recall per Fold (primary)", "F1 per Fold"]
     ):
         if metrica_key in metricas_fold:
-            scores = metricas_fold[metrica_key]["scores_por_fold"]
+            scores = [v for v in metricas_fold[metrica_key]["scores_por_fold"] if v == v]
+            if not scores:
+                continue
             ax.boxplot(scores, patch_artist=True,
                        boxprops=dict(facecolor="steelblue", alpha=0.7))
             ax.scatter([1] * len(scores), scores, color="red", zorder=5, s=40)
@@ -269,10 +309,7 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
     cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
     n_jobs = 1 if device == "cuda" else -1
 
-    scoring = {
-        "recall": "recall", "f1": "f1", "precision": "precision",
-        "roc_auc": "roc_auc", "average_precision": "average_precision",
-    }
+    scoring = SCORING_CV
 
     print(f"  Grid Search em andamento ({total_fits} fits, n_jobs={n_jobs})...", flush=True)
     grid = GridSearchCV(
@@ -304,7 +341,7 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
     cv_rocauc_mean = mf.get("roc_auc", {}).get("media", float("nan"))
     cv_auprc_mean = mf.get("average_precision", {}).get("media", float("nan"))
     cv_auprc_std  = mf.get("average_precision", {}).get("std", float("nan"))
-    folds_recall_zero = mf.get("recall", {}).get("folds_com_zero", [])
+    folds_indefinidos = mf.get("recall", {}).get("folds_indefinidos", [])
 
     best_pipeline.set_params(xgb__device="cpu")
     y_pred  = best_pipeline.predict(X)
@@ -325,7 +362,7 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
         "cv_precision_mean": cv_prec_mean,
         "cv_roc_auc_mean": cv_rocauc_mean,
         "cv_auprc_mean": cv_auprc_mean, "cv_auprc_std": cv_auprc_std,
-        "folds_recall_zero": str(folds_recall_zero),
+        "folds_indefinidos": str(folds_indefinidos),
         "insample_recall": insample_recall, "insample_f1": insample_f1,
         "insample_auprc": insample_auprc,
         "insample_roc_auc": round(roc_auc_score(y, y_proba), 4),
@@ -339,14 +376,18 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
     print(f"  cv_recall : {cv_recall_mean} +/- {cv_recall_std}  IC95%=[{cv_recall_ic95[0]}, {cv_recall_ic95[1]}]")
     print(f"  cv_f1     : {cv_f1_mean} +/- {cv_f1_std}")
     print(f"  cv_auprc  : {cv_auprc_mean} +/- {cv_auprc_std}   cv_roc_auc: {cv_rocauc_mean}")
-    if folds_recall_zero:
-        print(f"  ATENCAO: folds com recall=0: {folds_recall_zero}")
+    if folds_indefinidos:
+        print(f"  ATENCAO: folds sem imagem resistente (metrica indefinida, ignorados): {folds_indefinidos}")
     print(f"  in-sample recall {insample_recall} | gap overfitting (IS - CV): {gap}")
     print(f"  Matriz de confusao (in-sample):\n{confusion_matrix(y, y_pred)}")
 
     best_pipeline.named_steps["xgb"].get_booster().save_model(
         os.path.join(MODEL_DIR, f"xgb_{nome}.json")
     )
+    # Pipeline completo (scaler + PCA + XGBoost) exatamente como foi treinado:
+    # evaluate.py o carrega, em vez de reajustar scaler/PCA por conta propria.
+    best_pipeline.set_params(xgb__device="cpu")
+    joblib.dump(best_pipeline, os.path.join(MODEL_DIR, f"pipeline_{nome}.joblib"))
     pd.DataFrame(grid.cv_results_).to_csv(
         os.path.join(RESULTS_DIR, f"grid_results_{nome}.csv"), index=False
     )
@@ -365,7 +406,7 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
     }).sort_values("importance", ascending=False).to_csv(
         os.path.join(RESULTS_DIR, f"pca_importance_{nome}.csv"), index=False
     )
-    print(f"  Modelo salvo: xgb_{nome}.json")
+    print(f"  Modelo salvo: xgb_{nome}.json | pipeline_{nome}.joblib")
     return metricas
 
 
@@ -425,7 +466,7 @@ def main():
         "pipeline", "branch", "selecao", "n_splits",
         "cv_recall_mean", "cv_recall_std", "cv_recall_ic95_lower", "cv_recall_ic95_upper",
         "cv_f1_mean", "cv_f1_std", "cv_precision_mean", "cv_roc_auc_mean",
-        "cv_auprc_mean", "cv_auprc_std", "folds_recall_zero",
+        "cv_auprc_mean", "cv_auprc_std", "folds_indefinidos",
         "insample_recall", "insample_f1",
         "n_features_originais", "n_componentes_pca", "n_grupos_imagens", "tempo_s",
     ]
