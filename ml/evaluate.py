@@ -24,6 +24,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+import joblib
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -77,14 +78,27 @@ def carregar(pipeline_name: str):
     test_path  = os.path.join(DATA_DIR,  f"test_{pipeline_name}.csv")
     train_path = os.path.join(DATA_DIR,  f"train_{pipeline_name}.csv")
 
-    for p in (model_path, test_path, train_path):
+    pipe_path  = os.path.join(MODEL_DIR, f"pipeline_{pipeline_name}.joblib")
+
+    if not os.path.exists(test_path):
+        print(f"  [pulado] arquivo ausente: {os.path.relpath(test_path, BASE_DIR)}")
+        return None
+
+    df_test = pd.read_csv(test_path)
+    feats = _feature_cols(df_test)
+
+    # Preferencia: pipeline serializado por train.py (mesmo scaler/PCA do treino).
+    if os.path.exists(pipe_path):
+        return joblib.load(pipe_path), df_test, feats
+
+    # Fallback (modelos antigos): reajusta scaler/PCA no treino. Pode divergir do
+    # treino original se train.py usou subamostragem (IC2025_MAX_PIXELS_PER_IMG).
+    for p in (model_path, train_path):
         if not os.path.exists(p):
             print(f"  [pulado] arquivo ausente: {os.path.relpath(p, BASE_DIR)}")
             return None
-
-    df_test  = pd.read_csv(test_path)
+    print("  AVISO: pipeline_*.joblib ausente; reajustando scaler/PCA (rode train.py de novo).")
     df_train = pd.read_csv(train_path)
-    feats = _feature_cols(df_test)
 
     xgb = XGBClassifier()
     xgb.load_model(model_path)
@@ -109,9 +123,8 @@ def avaliar(pipeline_name: str) -> dict:
     y = df_test["label"].values
     grupos = df_test["sample_id"].values
 
-    Xp = pipe.named_steps["pca"].transform(pipe.named_steps["scaler"].transform(X))
-    y_pred  = pipe.named_steps["xgb"].predict(Xp)
-    y_proba = pipe.named_steps["xgb"].predict_proba(Xp)[:, 1]
+    y_pred  = pipe.predict(X)
+    y_proba = pipe.predict_proba(X)[:, 1]
 
     uma_classe = len(np.unique(y)) < 2
     m = {
