@@ -1,0 +1,11 @@
+pipeline,metrica,fold,score
+deriv_xgb,recall,0,0.2939
+deriv_xgb,recall,1,0.0113
+deriv_xgb,f1,0,0.2072
+deriv_xgb,f1,1,0.0218
+deriv_xgb,precision,0,0.16
+deriv_xgb,precision,1,0.2909
+deriv_xgb,roc_auc,0,0.728
+deriv_xgb,roc_auc,1,0.5272
+deriv_xgb,average_precision,0,0.1242
+deriv_xgb,average_precision,1,0.2261

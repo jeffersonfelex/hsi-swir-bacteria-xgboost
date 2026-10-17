@@ -46,30 +46,54 @@ def run(output_dir: str, folder_name: str):
     # 2. DETECÇÃO AUTOMÁTICA DO ROI CIRCULAR
     # ==============================================================================
     
-    rgb = spectral.get_rgb(img, [50, 30, 10])
-    gray = cv2.cvtColor((rgb * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
-    gray = cv2.GaussianBlur(gray, (7, 7), 2)
+    altura, largura, n_bandas = img.shape
+    b_idx = [min(50, n_bandas-1), min(30, n_bandas-1), min(10, n_bandas-1)]
+    rgb = spectral.get_rgb(img, b_idx)
+    gray = cv2.cvtColor((np.clip(rgb, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    gray_blurred = cv2.GaussianBlur(gray, (7, 7), 2)
+    
+    min_dim = min(altura, largura)
+    min_r = max(10, int(min_dim * 0.15))
+    max_r = int(min_dim * 0.48)
     
     circles = cv2.HoughCircles(
-        gray,
+        gray_blurred,
         cv2.HOUGH_GRADIENT,
         dp=1.2,
-        minDist=100,
+        minDist=max(20, int(min_dim * 0.2)),
         param1=100,
         param2=30,
-        minRadius=50,
-        maxRadius=200
+        minRadius=min_r,
+        maxRadius=max_r
     )
     
-    if circles is None:
-        print(f"⚠️ ROI não detectado em {folder_name}. Criando saída vazia.")
-        pd.DataFrame().to_csv(output_path, index=False)
-        return
-    
     mask = np.zeros(gray.shape, dtype=np.uint8)
-    x, y, r = circles[0][0]
-    cv2.circle(mask, (int(x), int(y)), int(r), 1, thickness=-1)
-    print(f"✅ ROI detectado: centro=({int(x)}, {int(y)}), raio={int(r)}")
+    
+    if circles is not None:
+        x, y, r = circles[0][0]
+        x, y, r = int(x), int(y), int(r)
+        cv2.circle(mask, (x, y), r, 1, thickness=-1)
+        print(f"✅ ROI detectado (Hough): centro=({x}, {y}), raio={r}")
+    else:
+        # Fallback 1: Otsu Thresholding + Enclosing Circle
+        _, thresh = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            (cx, cy), radius = cv2.minEnclosingCircle(largest)
+            if radius >= min_r:
+                x, y, r = int(cx), int(cy), int(radius)
+                cv2.circle(mask, (x, y), r, 1, thickness=-1)
+                print(f"✅ ROI detectado (Contorno/Otsu): centro=({x}, {y}), raio={r}")
+            else:
+                x, y, r = largura // 2, altura // 2, int(min_dim * 0.35)
+                cv2.circle(mask, (x, y), r, 1, thickness=-1)
+                print(f"⚠️ ROI padrão central aplicado: centro=({x}, {y}), raio={r}")
+        else:
+            x, y, r = largura // 2, altura // 2, int(min_dim * 0.35)
+            cv2.circle(mask, (x, y), r, 1, thickness=-1)
+            print(f"⚠️ ROI padrão central aplicado: centro=({x}, {y}), raio={r}")
     
     # ==============================================================================
     # 3. RECORTE E REMOÇÃO DO FUNDO
@@ -182,7 +206,8 @@ def run(output_dir: str, folder_name: str):
 
 
 if __name__ == "__main__":
-    output_dir = r"C:\Users\Jefferson\Documents\GitHub\ic-2025\dataSet\hsi_original"
+    base_dir = os.getenv("IC2025_BASE_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    output_dir = os.path.join(base_dir, "dataSet", "hsi_original")
     folder_name = "351_1_240506-160920"
 
     run(output_dir, folder_name)

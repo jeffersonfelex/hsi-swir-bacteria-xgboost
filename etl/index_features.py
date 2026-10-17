@@ -57,7 +57,16 @@ def run(output_dir: str, folder_name: str, suffix: str = "derivada"):
     """
     Lê um CSV de espectros, aplica index_features e salva o resultado.
     """
-    input_path  = os.path.join(output_dir, f"{folder_name}_{suffix}.csv")
+    primary_path = os.path.join(output_dir, f"{folder_name}_{suffix}.csv")
+    candidates = [
+        primary_path,
+        os.path.join(output_dir, f"{folder_name}_derivada.csv"),
+        os.path.join(output_dir, f"{folder_name}_log.csv"),
+        os.path.join(output_dir, f"{folder_name}_msc_signal.csv"),
+        os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv"),
+        os.path.join(output_dir, f"{folder_name}_roi.csv"),
+    ]
+    input_path = next((p for p in candidates if os.path.exists(p)), primary_path)
     output_path = os.path.join(output_dir, f"{folder_name}_features_index.csv")
 
     if not os.path.exists(input_path):

@@ -1,55 +1,84 @@
+"""
+Treinamento dos 8 pipelines (4 branches x 2 selecoes de features).
+
+Para cada pipeline:
+  StandardScaler -> PCA (95% variancia) -> XGBoost
+  Grid Search (324 combinacoes) com StratifiedGroupKFold agrupando por imagem.
+
+O numero de folds e adaptativo: com apenas 3 isolados resistentes (ATCC), e
+impossivel um k=5 estratificado por grupo. Usa-se
+    n_splits = min(5, n_grupos_da_classe_minoritaria_no_treino)
+o que, na pratica, equivale a um Leave-One-Resistant-Group-Out.
+
+Saidas em ml/results/:
+  comparacao_pipelines.csv, fold_scores_<nome>.csv, grid_results_<nome>.csv,
+  pca_importance_<nome>.csv, boxplot_folds_<nome>.png, boxplot_comparativo_pipelines.png
+Modelos em ml/models/xgb_<nome>.json
+"""
+
 import os
+import sys
 import time
-import pandas as pd
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 
 from datetime import timedelta
-from tqdm import tqdm
-from joblib import parallel_backend
 
 from sklearn.model_selection import StratifiedGroupKFold, GridSearchCV, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from sklearn.base import ClassifierMixin
 from sklearn.metrics import (
-    accuracy_score, f1_score, precision_score,
-    recall_score, roc_auc_score, confusion_matrix,
-    average_precision_score
+    f1_score, recall_score, roc_auc_score,
+    confusion_matrix, average_precision_score,
 )
 from xgboost import XGBClassifier
 
 # ==============================================================================
-# CONFIGURAÇÃO
+# CONFIGURACAO
 # ==============================================================================
 
-BASE_DIR     = r"C:\Users\Jefferson\Documents\GitHub\ic-2025"
+BASE_DIR = os.getenv(
+    "IC2025_BASE_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+)
 FEATURES_DIR = os.path.join(BASE_DIR, "features_selected")
+DATA_DIR     = os.path.join(BASE_DIR, "ml", "data")
 MODEL_DIR    = os.path.join(BASE_DIR, "ml", "models")
 RESULTS_DIR  = os.path.join(BASE_DIR, "ml", "results")
 
-os.makedirs(MODEL_DIR,   exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 PIPELINES = [
-    ("msc",   "mi"),
-    ("msc",   "xgb"),
-    ("log",   "mi"),
-    ("log",   "xgb"),
-    ("deriv", "mi"),
-    ("deriv", "xgb"),
-    ("raw",   "mi"),
-    ("raw",   "xgb"),
+    ("msc", "mi"), ("msc", "xgb"),
+    ("log", "mi"), ("log", "xgb"),
+    ("deriv", "mi"), ("deriv", "xgb"),
+    ("raw", "mi"), ("raw", "xgb"),
 ]
 
-# PCA: número de componentes (None = manter 95% da variância)
 PCA_N_COMPONENTS = 0.95
+MAX_SPLITS = 5
 
-PARAM_GRID = {
+# --- Aceleradores (variaveis de ambiente) -------------------------------------
+# IC2025_GRID = full (padrao, 324 combinacoes) | fast (12 combinacoes)
+# IC2025_MAX_PIXELS_PER_IMG = N  -> amostra ate N pixels por imagem no TREINO
+#     (0 = usar todos). Pixels da mesma colonia sao pseudo-replicas espaciais;
+#     limitar a ~20-30 mil por imagem quase nao altera o sinal e corta MUITO o tempo.
+GRID_MODE = os.getenv("IC2025_GRID", "full").strip().lower()
+MAX_PIXELS_PER_IMG = int(os.getenv("IC2025_MAX_PIXELS_PER_IMG", "0"))
+
+PARAM_GRID_FULL = {
     "xgb__n_estimators":     [100, 200, 300],
     "xgb__max_depth":        [3, 5, 7],
     "xgb__learning_rate":    [0.01, 0.1, 0.3],
@@ -57,21 +86,38 @@ PARAM_GRID = {
     "xgb__colsample_bytree": [0.8, 1.0],
     "xgb__gamma":            [0, 0.1, 0.3],
 }
-
-SELECAO_LABEL = {
-    "mi":  "Mutual Information",
-    "xgb": "XGBoost Importance",
+PARAM_GRID_FAST = {
+    "xgb__n_estimators":     [200, 300],
+    "xgb__max_depth":        [3, 5],
+    "xgb__learning_rate":    [0.05, 0.1, 0.3],
+    "xgb__subsample":        [0.8],
+    "xgb__colsample_bytree": [0.8],
+    "xgb__gamma":            [0],
 }
+PARAM_GRID = PARAM_GRID_FAST if GRID_MODE == "fast" else PARAM_GRID_FULL
+
+SELECAO_LABEL = {"mi": "Mutual Information", "xgb": "XGBoost Importance"}
 
 TOTAL_COMBINACOES = (
-    len(PARAM_GRID["xgb__n_estimators"]) *
-    len(PARAM_GRID["xgb__max_depth"]) *
-    len(PARAM_GRID["xgb__learning_rate"]) *
-    len(PARAM_GRID["xgb__subsample"]) *
-    len(PARAM_GRID["xgb__colsample_bytree"]) *
-    len(PARAM_GRID["xgb__gamma"])
+    len(PARAM_GRID["xgb__n_estimators"]) * len(PARAM_GRID["xgb__max_depth"]) *
+    len(PARAM_GRID["xgb__learning_rate"]) * len(PARAM_GRID["xgb__subsample"]) *
+    len(PARAM_GRID["xgb__colsample_bytree"]) * len(PARAM_GRID["xgb__gamma"])
 )
-TOTAL_FITS = TOTAL_COMBINACOES * 5  # 5 folds
+
+
+def subamostrar_por_grupo(X, y, grupos, max_por_grupo: int, seed: int = 42):
+    """Mantem no maximo `max_por_grupo` pixels por imagem (amostragem sem reposicao)."""
+    if not max_por_grupo or max_por_grupo <= 0:
+        return X, y, grupos
+    rng = np.random.default_rng(seed)
+    keep = []
+    for g in np.unique(grupos):
+        idx = np.where(grupos == g)[0]
+        if len(idx) > max_por_grupo:
+            idx = rng.choice(idx, size=max_por_grupo, replace=False)
+        keep.append(idx)
+    keep = np.sort(np.concatenate(keep))
+    return X[keep], y[keep], grupos[keep]
 
 
 def formatar_tempo(segundos: float) -> str:
@@ -79,481 +125,324 @@ def formatar_tempo(segundos: float) -> str:
 
 
 def detectar_dispositivo() -> str:
+    if os.getenv("IC2025_FORCE_CPU", "").strip() == "1":
+        print("IC2025_FORCE_CPU=1 — treinando com CPU")
+        return "cpu"
     try:
-        test = XGBClassifier(device="cuda", n_estimators=1)
-        test.fit(np.array([[1, 2], [3, 4]]), np.array([0, 1]))
+        rng = np.random.default_rng(0)
+        Xt = rng.random((256, 6))
+        yt = (Xt[:, 0] > 0.5).astype(int)
+        test = XGBClassifier(device="cuda", tree_method="hist", n_estimators=8, max_depth=3)
+        test.fit(Xt, yt)
+        test.predict(Xt)
         print("GPU detectada — treinando com CUDA")
         return "cuda"
-    except Exception:
-        print("GPU não disponível — treinando com CPU")
+    except Exception as e:
+        print(f"GPU nao disponivel — treinando com CPU  ({type(e).__name__}: {str(e)[:180]})")
         return "cpu"
 
 
 def ic95(scores: list) -> tuple:
-    """Calcula intervalo de confiança 95% via t-distribution."""
     n = len(scores)
     if n < 2:
         return (float("nan"), float("nan"))
     se = stats.sem(scores)
     h = se * stats.t.ppf(0.975, df=n - 1)
     m = np.mean(scores)
-    return (round(m - h, 4), round(m + h, 4))
+    return (round(float(m - h), 4), round(float(m + h), 4))
 
 
-# ==============================================================================
-# WRAPPER COM PROGRESSO
-# ==============================================================================
+def n_splits_para(y: np.ndarray, grupos: np.ndarray) -> int:
+    """min(5, nº de grupos distintos da classe menos representada)."""
+    counts = []
+    for classe in np.unique(y):
+        g = np.unique(grupos[y == classe])
+        counts.append(len(g))
+    return int(max(1, min(MAX_SPLITS, min(counts))))
 
-class XGBComProgresso(XGBClassifier, ClassifierMixin):
-    """Wrapper que atualiza a barra de progresso a cada fit() chamado pelo GridSearchCV."""
-    _estimator_type = "classifier"
-    pbar: tqdm = None
-
-    def fit(self, X, y, **kwargs):
-        result = super().fit(X, y, **kwargs)
-        if XGBComProgresso.pbar is not None:
-            XGBComProgresso.pbar.update(1)
-        return result
-
-
-# ==============================================================================
-# ANÁLISE ROBUSTA POR FOLD
-# ==============================================================================
 
 def analisar_folds(cv_results: dict, nome: str) -> dict:
-    """
-    Extrai métricas por fold, calcula IC95% e identifica folds problemáticos.
-    Gera boxplot por fold salvo em RESULTS_DIR.
-    """
     metricas_fold = {}
-    fold_metricas_disponiveis = [k for k in cv_results if k.startswith("test_")]
-
-    for chave in fold_metricas_disponiveis:
+    for chave in [k for k in cv_results if k.startswith("test_")]:
         nome_metrica = chave.replace("test_", "")
-        scores = list(cv_results[chave])
-        media  = round(float(np.mean(scores)), 4)
-        std    = round(float(np.std(scores)),  4)
-        ci     = ic95(scores)
-        folds_zero = [i for i, s in enumerate(scores) if s == 0.0]
-
+        scores = [float(s) for s in cv_results[chave]]
+        ci = ic95(scores)
         metricas_fold[nome_metrica] = {
             "scores_por_fold": [round(s, 4) for s in scores],
-            "media":           media,
-            "std":             std,
-            "ic95_lower":      ci[0],
-            "ic95_upper":      ci[1],
-            "folds_com_zero":  folds_zero,
+            "media":          round(float(np.mean(scores)), 4),
+            "std":            round(float(np.std(scores)), 4),
+            "ic95_lower":     ci[0],
+            "ic95_upper":     ci[1],
+            "folds_com_zero": [i for i, s in enumerate(scores) if s == 0.0],
         }
 
-    # --- Boxplot de recall e f1 por fold ---
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    fig.suptitle(f"Distribuição por Fold — {nome.upper()}", fontsize=12)
-
+    fig.suptitle(f"Per-Fold Distribution — {nome.upper()}", fontsize=12)
     for ax, metrica_key, titulo in zip(
-        axes,
-        ["recall", "f1"],
-        ["Recall por Fold (Métrica Primária)", "F1 por Fold"]
+        axes, ["recall", "f1"], ["Recall per Fold (primary)", "F1 per Fold"]
     ):
         if metrica_key in metricas_fold:
             scores = metricas_fold[metrica_key]["scores_por_fold"]
-            ax.boxplot(scores, vert=True, patch_artist=True,
+            ax.boxplot(scores, patch_artist=True,
                        boxprops=dict(facecolor="steelblue", alpha=0.7))
             ax.scatter([1] * len(scores), scores, color="red", zorder=5, s=40)
             ax.set_title(titulo, fontsize=10)
             ax.set_ylabel("Score")
-            ax.set_xticks([1])
-            ax.set_xticklabels([nome.upper()])
+            ax.set_xticks([1]); ax.set_xticklabels([nome.upper()])
             ax.set_ylim(-0.05, 1.05)
-            ax.axhline(y=np.mean(scores), color="green", linestyle="--",
-                       linewidth=1, label=f"Média={np.mean(scores):.3f}")
+            m = float(np.mean(scores))
+            ax.axhline(y=m, color="green", linestyle="--", linewidth=1, label=f"Mean={m:.3f}")
             ax.legend(fontsize=8)
-
     plt.tight_layout()
-    boxplot_path = os.path.join(RESULTS_DIR, f"boxplot_folds_{nome}.png")
-    plt.savefig(boxplot_path, dpi=150, bbox_inches="tight")
+    plt.savefig(os.path.join(RESULTS_DIR, f"boxplot_folds_{nome}.png"), dpi=150, bbox_inches="tight")
     plt.close()
-
     return metricas_fold
 
 
-# ==============================================================================
-# TREINAMENTO DE UM PIPELINE
-# ==============================================================================
-
 def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dict:
     nome = f"{branch}_{selecao}"
-
     print("\n" + "=" * 70)
     print(f"[{idx}/{total}] Pipeline: {branch.upper()} + {SELECAO_LABEL[selecao]}")
-    print(f"   Dispositivo : {'GPU (CUDA)' if device == 'cuda' else 'CPU'}")
-    print(f"   Combinações : {TOTAL_COMBINACOES} × 5 folds = {TOTAL_FITS} treinamentos")
     print("=" * 70)
 
-    dataset_path = os.path.join(FEATURES_DIR, f"dataset_{nome}.csv")
+    # Preferir o conjunto de TREINO externo (split_dataset.py); cair para o dataset
+    # completo apenas se o split ainda nao foi executado.
+    train_path   = os.path.join(DATA_DIR, f"train_{nome}.csv")
+    dataset_path = train_path if os.path.exists(train_path) else os.path.join(FEATURES_DIR, f"dataset_{nome}.csv")
     if not os.path.exists(dataset_path):
-        print(f"  Dataset não encontrado: {dataset_path}")
-        return {"pipeline": nome, "status": "dataset não encontrado"}
+        print(f"  Dataset nao encontrado: {dataset_path}")
+        return {"pipeline": nome, "status": "dataset nao encontrado"}
+    print(f"  Fonte: {os.path.relpath(dataset_path, BASE_DIR)}")
 
     df = pd.read_csv(dataset_path)
 
-    # Filtro anti-leakage: remove estatísticas descritivas e áreas
     colunas_vazadas = [
         c for c in df.columns
         if c.startswith("desc_") or c.endswith("_area_norm") or c in ("sample_id", "label")
     ]
     feature_cols = [c for c in df.columns if c not in colunas_vazadas]
 
+    for col in ("sample_id", "label"):
+        if col not in df.columns:
+            print(f"  ERRO: coluna '{col}' ausente em {os.path.basename(dataset_path)}. Pulando.")
+            return {"pipeline": nome, "status": f"sem coluna {col}"}
+
     X = df[feature_cols].fillna(0).values
     y = df["label"].values
     grupos = df["sample_id"].values
 
-    n_classes = len(np.unique(y))
-    n_grupos  = len(np.unique(grupos))
+    classes = np.unique(y)
+    if len(classes) < 2:
+        print(f"  ERRO: dataset de treino tem apenas a classe {classes.tolist()} — "
+              f"split provavelmente corrompido. Rode 'python run.py split' de novo. Pulando.")
+        return {"pipeline": nome, "status": "treino monoclasse"}
 
-    print(f"  {X.shape[0]} pixels × {X.shape[1]} features (anti-leakage aplicado)")
+    if MAX_PIXELS_PER_IMG:
+        n0 = len(y)
+        X, y, grupos = subamostrar_por_grupo(X, y, grupos, MAX_PIXELS_PER_IMG)
+        print(f"  subamostragem: {n0} -> {len(y)} pixels (max {MAX_PIXELS_PER_IMG}/imagem)")
+
+    n_grupos = len(np.unique(grupos))
+    n_splits = n_splits_para(y, grupos)
+    total_fits = TOTAL_COMBINACOES * n_splits
+
+    print(f"  {X.shape[0]} pixels x {X.shape[1]} features (anti-leakage aplicado)")
     print(f"  Imagens (grupos): {n_grupos} | Classes: {dict(zip(*np.unique(y, return_counts=True)))}")
-    print(f"  NOTA: pixels da mesma imagem compartilham contexto — StratifiedGroupKFold")
-    print(f"        garante que imagens inteiras não cruzam entre treino e validação.")
+    print(f"  n_splits = {n_splits}  (adaptativo; {TOTAL_COMBINACOES} combinacoes x {n_splits} folds = {total_fits} fits)")
 
-    # ------------------------------------------------------------------
-    # PIPELINE: StandardScaler → PCA → XGBoost
-    # PCA reduz dimensionalidade e remove redundância espectral antes do modelo.
-    # ------------------------------------------------------------------
-    xgb_base = XGBComProgresso(
-        objective="binary:logistic",
-        eval_metric="logloss",
-        device=device,
-        random_state=42,
+    if n_splits < 2:
+        print("  ERRO: menos de 2 grupos na classe minoritaria — CV por grupo impossivel. Pulando.")
+        return {"pipeline": nome, "status": "grupos insuficientes"}
+
+    # n_jobs=1 no XGBoost: o paralelismo fica a cargo do GridSearchCV (loky),
+    # evitando oversubscription de threads.
+    xgb_base = XGBClassifier(
+        objective="binary:logistic", eval_metric="logloss",
+        device=device, random_state=42, n_jobs=1,
     )
-
     pipeline_sklearn = Pipeline([
         ("scaler", StandardScaler()),
         ("pca",    PCA(n_components=PCA_N_COMPONENTS, random_state=42)),
         ("xgb",    xgb_base),
     ])
 
-    cv     = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
     n_jobs = 1 if device == "cuda" else -1
 
-    XGBComProgresso.pbar = tqdm(
-        total=TOTAL_FITS,
-        desc=f"  Grid Search [{nome}]",
-        unit="fit",
-        ncols=80,
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-    )
-
-    # Scoring principal: recall (sensibilidade = detecção de resistentes é prioridade)
-    # AUPRC via average_precision_score
     scoring = {
-        "recall":            "recall",
-        "f1":                "f1",
-        "precision":         "precision",
-        "roc_auc":           "roc_auc",
-        "average_precision": "average_precision",  # AUPRC
+        "recall": "recall", "f1": "f1", "precision": "precision",
+        "roc_auc": "roc_auc", "average_precision": "average_precision",
     }
 
+    print(f"  Grid Search em andamento ({total_fits} fits, n_jobs={n_jobs})...", flush=True)
     grid = GridSearchCV(
-        estimator=pipeline_sklearn,
-        param_grid=PARAM_GRID,
-        scoring="recall",          # recall como métrica primária de seleção
-        refit="recall",
-        cv=cv,
-        n_jobs=n_jobs,
-        verbose=0,
-        return_train_score=False,
+        estimator=pipeline_sklearn, param_grid=PARAM_GRID,
+        scoring="recall", refit="recall", cv=cv, n_jobs=n_jobs,
+        verbose=1, return_train_score=False,
     )
-
     t_inicio = time.time()
-
-    with parallel_backend("threading" if device == "cuda" else "loky"):
-        grid.fit(X, y, groups=grupos)
-
-    XGBComProgresso.pbar.close()
-    XGBComProgresso.pbar = None
+    grid.fit(X, y, groups=grupos)
 
     t_decorrido = time.time() - t_inicio
     best_pipeline = grid.best_estimator_
+    print(f"  Concluido em {formatar_tempo(t_decorrido)}")
+    print(f"  Melhores hiperparametros: {grid.best_params_}")
 
-    print(f"  Concluído em {formatar_tempo(t_decorrido)}")
-    print(f"  Melhores hiperparâmetros: {grid.best_params_}")
-
-    # ------------------------------------------------------------------
-    # AVALIAÇÃO POR FOLD (cross_validate com múltiplas métricas)
-    # Re-executa CV com o melhor modelo para obter scores detalhados por fold
-    # ------------------------------------------------------------------
     cv_detalhado = cross_validate(
-        best_pipeline, X, y,
-        groups=grupos,
-        cv=cv,
-        scoring=scoring,
-        return_train_score=False,
-        n_jobs=n_jobs,
+        best_pipeline, X, y, groups=grupos, cv=cv,
+        scoring=scoring, return_train_score=False, n_jobs=n_jobs,
     )
+    mf = analisar_folds(cv_detalhado, nome)
 
-    metricas_fold = analisar_folds(cv_detalhado, nome)
+    cv_recall_mean = mf.get("recall", {}).get("media", float("nan"))
+    cv_recall_std  = mf.get("recall", {}).get("std", float("nan"))
+    cv_recall_ic95 = (mf.get("recall", {}).get("ic95_lower", float("nan")),
+                      mf.get("recall", {}).get("ic95_upper", float("nan")))
+    cv_f1_mean    = mf.get("f1", {}).get("media", float("nan"))
+    cv_f1_std     = mf.get("f1", {}).get("std", float("nan"))
+    cv_prec_mean  = mf.get("precision", {}).get("media", float("nan"))
+    cv_rocauc_mean = mf.get("roc_auc", {}).get("media", float("nan"))
+    cv_auprc_mean = mf.get("average_precision", {}).get("media", float("nan"))
+    cv_auprc_std  = mf.get("average_precision", {}).get("std", float("nan"))
+    folds_recall_zero = mf.get("recall", {}).get("folds_com_zero", [])
 
-    # Métricas out-of-fold (confiáveis)
-    cv_recall_mean = metricas_fold.get("recall", {}).get("media", float("nan"))
-    cv_recall_std  = metricas_fold.get("recall", {}).get("std",   float("nan"))
-    cv_recall_ic95 = (
-        metricas_fold.get("recall", {}).get("ic95_lower", float("nan")),
-        metricas_fold.get("recall", {}).get("ic95_upper", float("nan")),
-    )
-    cv_f1_mean     = metricas_fold.get("f1", {}).get("media", float("nan"))
-    cv_f1_std      = metricas_fold.get("f1", {}).get("std",   float("nan"))
-    cv_auprc_mean  = metricas_fold.get("average_precision", {}).get("media", float("nan"))
-    cv_auprc_std   = metricas_fold.get("average_precision", {}).get("std",   float("nan"))
-
-    folds_recall_zero = metricas_fold.get("recall", {}).get("folds_com_zero", [])
-
-    # Métricas in-sample (apenas diagnóstico de overfitting)
     best_pipeline.set_params(xgb__device="cpu")
-
     y_pred  = best_pipeline.predict(X)
     y_proba = best_pipeline.predict_proba(X)[:, 1]
-
     best_pipeline.set_params(xgb__device=device)
 
     insample_recall = round(recall_score(y, y_pred, zero_division=0), 4)
     insample_f1     = round(f1_score(y, y_pred, zero_division=0), 4)
     insample_auprc  = round(average_precision_score(y, y_proba), 4)
-
-    # Determinar número de componentes PCA efetivo
-    n_pca_components = best_pipeline.named_steps["pca"].n_components_
+    n_pca = best_pipeline.named_steps["pca"].n_components_
 
     metricas = {
-        "pipeline":              nome,
-        "branch":                branch,
-        "selecao":               SELECAO_LABEL[selecao],
-        "device":                device,
-        # Out-of-fold (confiáveis)
-        "cv_recall_mean":        cv_recall_mean,
-        "cv_recall_std":         cv_recall_std,
-        "cv_recall_ic95_lower":  cv_recall_ic95[0],
-        "cv_recall_ic95_upper":  cv_recall_ic95[1],
-        "cv_f1_mean":            cv_f1_mean,
-        "cv_f1_std":             cv_f1_std,
-        "cv_auprc_mean":         cv_auprc_mean,
-        "cv_auprc_std":          cv_auprc_std,
-        "folds_recall_zero":     str(folds_recall_zero),
-        # In-sample (diagnóstico de overfitting)
-        "insample_recall":       insample_recall,
-        "insample_f1":           insample_f1,
-        "insample_auprc":        insample_auprc,
-        "insample_roc_auc":      round(roc_auc_score(y, y_proba), 4),
-        # Estrutura
-        "n_features_originais":  X.shape[1],
-        "n_componentes_pca":     n_pca_components,
-        "n_grupos_imagens":      n_grupos,
-        "tempo_s":               round(t_decorrido, 1),
+        "pipeline": nome, "branch": branch, "selecao": SELECAO_LABEL[selecao],
+        "device": device, "n_splits": n_splits,
+        "cv_recall_mean": cv_recall_mean, "cv_recall_std": cv_recall_std,
+        "cv_recall_ic95_lower": cv_recall_ic95[0], "cv_recall_ic95_upper": cv_recall_ic95[1],
+        "cv_f1_mean": cv_f1_mean, "cv_f1_std": cv_f1_std,
+        "cv_precision_mean": cv_prec_mean,
+        "cv_roc_auc_mean": cv_rocauc_mean,
+        "cv_auprc_mean": cv_auprc_mean, "cv_auprc_std": cv_auprc_std,
+        "folds_recall_zero": str(folds_recall_zero),
+        "insample_recall": insample_recall, "insample_f1": insample_f1,
+        "insample_auprc": insample_auprc,
+        "insample_roc_auc": round(roc_auc_score(y, y_proba), 4),
+        "n_features_originais": X.shape[1], "n_componentes_pca": n_pca,
+        "n_grupos_imagens": n_grupos, "tempo_s": round(t_decorrido, 1),
         **{f"param_{k.replace('xgb__', '')}": v for k, v in grid.best_params_.items()},
     }
 
-    print(f"\n  MÉTRICAS [{nome.upper()}]")
-    print(f"  PCA: {X.shape[1]} features → {n_pca_components} componentes (95% variância)")
-    print(f"  ── Cross-Validation out-of-fold (confiável) ──")
-    print(f"  cv_recall  : {cv_recall_mean} ± {cv_recall_std}  IC95%=[{cv_recall_ic95[0]}, {cv_recall_ic95[1]}]")
-    print(f"  cv_f1      : {cv_f1_mean} ± {cv_f1_std}")
-    print(f"  cv_auprc   : {cv_auprc_mean} ± {cv_auprc_std}")
+    gap = round(insample_recall - cv_recall_mean, 4) if cv_recall_mean == cv_recall_mean else "N/A"
+    print(f"\n  MetriCAS [{nome.upper()}]  PCA: {X.shape[1]} -> {n_pca} componentes")
+    print(f"  cv_recall : {cv_recall_mean} +/- {cv_recall_std}  IC95%=[{cv_recall_ic95[0]}, {cv_recall_ic95[1]}]")
+    print(f"  cv_f1     : {cv_f1_mean} +/- {cv_f1_std}")
+    print(f"  cv_auprc  : {cv_auprc_mean} +/- {cv_auprc_std}   cv_roc_auc: {cv_rocauc_mean}")
     if folds_recall_zero:
-        print(f"  ATENCAO: Folds com recall=0: {folds_recall_zero}  (CV instável)")
-    print(f"  ── In-sample / treino completo (diagnóstico de overfitting) ──")
-    print(f"  recall (IS): {insample_recall}  |  f1 (IS): {insample_f1}  |  auprc (IS): {insample_auprc}")
-    overfitting_gap = round(insample_recall - cv_recall_mean, 4) if cv_recall_mean == cv_recall_mean else "N/A"
-    print(f"  Gap overfitting (IS - CV): {overfitting_gap}")
-    print(f"  Matriz de confusão (in-sample):\n{confusion_matrix(y, y_pred)}")
+        print(f"  ATENCAO: folds com recall=0: {folds_recall_zero}")
+    print(f"  in-sample recall {insample_recall} | gap overfitting (IS - CV): {gap}")
+    print(f"  Matriz de confusao (in-sample):\n{confusion_matrix(y, y_pred)}")
 
-    # ------------------------------------------------------------------
-    # SALVAR
-    # ------------------------------------------------------------------
     best_pipeline.named_steps["xgb"].get_booster().save_model(
         os.path.join(MODEL_DIR, f"xgb_{nome}.json")
     )
-
     pd.DataFrame(grid.cv_results_).to_csv(
         os.path.join(RESULTS_DIR, f"grid_results_{nome}.csv"), index=False
     )
-
-    # Salvar detalhes dos folds
-    fold_rows = []
-    for metrica_key, dados in metricas_fold.items():
-        for fold_idx, score in enumerate(dados["scores_por_fold"]):
-            fold_rows.append({
-                "pipeline": nome,
-                "metrica":  metrica_key,
-                "fold":     fold_idx,
-                "score":    score,
-            })
+    fold_rows = [
+        {"pipeline": nome, "metrica": mk, "fold": fi, "score": s}
+        for mk, d in mf.items()
+        for fi, s in enumerate(d["scores_por_fold"])
+    ]
     pd.DataFrame(fold_rows).to_csv(
         os.path.join(RESULTS_DIR, f"fold_scores_{nome}.csv"), index=False
     )
-
-    # Feature importance (sobre features originais — antes do PCA)
-    # XGBoost após PCA opera sobre componentes; importância refere-se aos PCs
-    pca_importances = best_pipeline.named_steps["xgb"].feature_importances_
-    pc_names = [f"PC{i+1}" for i in range(len(pca_importances))]
-    df_importances = pd.DataFrame({
-        "componente_pca": pc_names,
-        "importance":     pca_importances,
-    }).sort_values("importance", ascending=False)
-    df_importances.to_csv(
+    pca_imp = best_pipeline.named_steps["xgb"].feature_importances_
+    pd.DataFrame({
+        "componente_pca": [f"PC{i+1}" for i in range(len(pca_imp))],
+        "importance": pca_imp,
+    }).sort_values("importance", ascending=False).to_csv(
         os.path.join(RESULTS_DIR, f"pca_importance_{nome}.csv"), index=False
     )
-
     print(f"  Modelo salvo: xgb_{nome}.json")
-    print(f"  Boxplot salvo: boxplot_folds_{nome}.png")
     return metricas
 
 
-# ==============================================================================
-# EXECUÇÃO PRINCIPAL
-# ==============================================================================
-
-def main():
-    total    = len(PIPELINES)
-    t_global = time.time()
-    tempos   = []
-
-    print("Treinamento — 8 pipelines independentes")
-    print("   MSC   × MI  |  MSC   × XGBoost Importance")
-    print("   Log   × MI  |  Log   × XGBoost Importance")
-    print("   Deriv × MI  |  Deriv × XGBoost Importance")
-    print("   Raw   × MI  |  Raw   × XGBoost Importance  (baseline)")
-    print(f"\n   Pipeline: StandardScaler → PCA (95% var) → XGBoost")
-    print(f"   Combinações por pipeline : {TOTAL_COMBINACOES} × 5 folds = {TOTAL_FITS}")
-    print(f"   Métrica primária         : Recall (detecção de resistentes)")
-    print(f"   Métrica secundária       : AUPRC (área sob curva precisão-recall)\n")
-
-    device = detectar_dispositivo()
-
-    pbar_global = tqdm(
-        total=total,
-        desc="Progresso geral",
-        unit="pipeline",
-        ncols=80,
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} pipelines [{elapsed}<{remaining}]"
-    )
-
-    resultados = []
-    for idx, (branch, selecao) in enumerate(PIPELINES, start=1):
-        t0      = time.time()
-        result  = treinar(branch, selecao, idx, total, device)
-        elapsed = time.time() - t0
-        tempos.append(elapsed)
-        resultados.append(result)
-        pbar_global.update(1)
-
-        media    = sum(tempos) / len(tempos)
-        restante = media * (total - idx)
-        print(f"\n  Tempo deste pipeline : {formatar_tempo(elapsed)}")
-        print(f"  Tempo total até agora: {formatar_tempo(time.time() - t_global)}")
-        if idx < total:
-            print(f"  Estimativa restante  : {formatar_tempo(restante)} ({total - idx} pipelines)")
-
-    pbar_global.close()
-
-    # ------------------------------------------------------------------
-    # RELATÓRIO FINAL
-    # ------------------------------------------------------------------
-    t_total = time.time() - t_global
-
-    print("\n" + "=" * 70)
-    print("COMPARAÇÃO FINAL — 6 pipelines")
-    print("=" * 70)
-
-    cols_resumo = [
-        "pipeline", "branch", "selecao",
-        "cv_recall_mean", "cv_recall_std", "cv_recall_ic95_lower", "cv_recall_ic95_upper",
-        "cv_f1_mean", "cv_f1_std",
-        "cv_auprc_mean", "cv_auprc_std",
-        "folds_recall_zero",
-        "insample_recall", "insample_f1",
-        "n_features_originais", "n_componentes_pca", "n_grupos_imagens",
-        "tempo_s",
-    ]
-    resultados_validos = [r for r in resultados if "cv_recall_mean" in r]
-
-    if not resultados_validos:
-        print("\nNenhum pipeline concluído com sucesso.")
-        return
-
-    df_result = (
-        pd.DataFrame(resultados_validos)[cols_resumo]
-        .sort_values("cv_recall_mean", ascending=False)
-        .reset_index(drop=True)
-    )
-    print(df_result.to_string(index=False))
-
-    # Aviso sobre instabilidade — não declarar "melhor pipeline" se CV for instável
-    melhor = df_result.iloc[0]
-    print(f"\nPipeline com maior cv_recall_mean: {melhor['pipeline'].upper()}")
-    print(f"   cv_recall : {melhor['cv_recall_mean']} ± {melhor['cv_recall_std']}")
-    print(f"   IC95%     : [{melhor['cv_recall_ic95_lower']}, {melhor['cv_recall_ic95_upper']}]")
-    print(f"   cv_auprc  : {melhor['cv_auprc_mean']} ± {melhor['cv_auprc_std']}")
-
-    # Verificar estabilidade do ranking
-    recalls = df_result["cv_recall_mean"].values
-    stds    = df_result["cv_recall_std"].values
-    instavel = any(s > 0.20 for s in stds)
-    if instavel:
-        print("\n  ATENCAO: Alta variabilidade nos folds (std > 0.20 em algum pipeline).")
-        print("  O ranking entre pipelines NÃO é estatisticamente robusto.")
-        print("  Interprete os resultados com cautela — poucos grupos (imagens) limitam a CV.")
-
-    print(f"\nTempo total: {formatar_tempo(t_total)}")
-
-    relatorio = os.path.join(RESULTS_DIR, "comparacao_pipelines.csv")
-    df_result.to_csv(relatorio, index=False)
-    print(f"Relatório salvo em: {relatorio}")
-
-    # Boxplot comparativo de recall entre todos os pipelines
-    _gerar_boxplot_comparativo(resultados_validos)
-
-
 def _gerar_boxplot_comparativo(resultados: list) -> None:
-    """Gera boxplot comparativo de recall e AUPRC entre todos os pipelines."""
-    fold_files = [
-        os.path.join(RESULTS_DIR, f"fold_scores_{r['pipeline']}.csv")
-        for r in resultados
-    ]
-
-    dfs = []
-    for f in fold_files:
-        if os.path.exists(f):
-            dfs.append(pd.read_csv(f))
-
+    fold_files = [os.path.join(RESULTS_DIR, f"fold_scores_{r['pipeline']}.csv") for r in resultados]
+    dfs = [pd.read_csv(f) for f in fold_files if os.path.exists(f)]
     if not dfs:
         return
-
     df_all = pd.concat(dfs, ignore_index=True)
-
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle("Comparação entre Pipelines — CV por Fold", fontsize=13)
-
+    fig.suptitle("Pipeline Comparison — CV per Fold", fontsize=13)
     for ax, metrica, titulo in zip(
-        axes,
-        ["recall", "average_precision"],
-        ["Recall por Fold (Métrica Primária)", "AUPRC por Fold"]
+        axes, ["recall", "average_precision"],
+        ["Recall per Fold (primary)", "AUPRC per Fold"]
     ):
         sub = df_all[df_all["metrica"] == metrica]
         if sub.empty:
             continue
-        pipelines = sub["pipeline"].unique()
-        data_plot = [sub[sub["pipeline"] == p]["score"].values for p in pipelines]
-
-        ax.boxplot(data_plot, labels=pipelines, vert=True, patch_artist=True)
-        ax.set_title(titulo, fontsize=11)
-        ax.set_ylabel("Score")
+        pipes = list(sub["pipeline"].unique())
+        ax.boxplot([sub[sub["pipeline"] == p]["score"].values for p in pipes],
+                   patch_artist=True)
+        ax.set_title(titulo, fontsize=11); ax.set_ylabel("Score")
         ax.set_ylim(-0.05, 1.05)
-        ax.axhline(y=0.5, color="gray", linestyle=":", linewidth=0.8)
-        ax.tick_params(axis="x", rotation=30)
-
+        ax.set_xticks(range(1, len(pipes) + 1))
+        ax.set_xticklabels(pipes, rotation=30, ha="right")
     plt.tight_layout()
     path = os.path.join(RESULTS_DIR, "boxplot_comparativo_pipelines.png")
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Boxplot comparativo salvo em: {path}")
+
+
+def main():
+    total = len(PIPELINES)
+    t_global = time.time()
+    print("Treinamento — 8 pipelines (4 branches x 2 selecoes)")
+    print(f"Pipeline: StandardScaler -> PCA (95% var) -> XGBoost")
+    print(f"Grid: {GRID_MODE.upper()} ({TOTAL_COMBINACOES} combinacoes) | "
+          f"max pixels/imagem no treino: {MAX_PIXELS_PER_IMG or 'todos'}")
+    device = detectar_dispositivo()
+
+    resultados = []
+    for idx, (branch, selecao) in enumerate(PIPELINES, start=1):
+        try:
+            resultados.append(treinar(branch, selecao, idx, total, device))
+        except Exception as e:
+            print(f"  ERRO no pipeline {branch}_{selecao}: {type(e).__name__}: {str(e)[:200]}")
+            resultados.append({"pipeline": f"{branch}_{selecao}", "status": f"erro: {type(e).__name__}"})
+        print(f"  Tempo total ate agora: {formatar_tempo(time.time() - t_global)}")
+
+    validos = [r for r in resultados if "cv_recall_mean" in r]
+    if not validos:
+        print("\nNenhum pipeline concluido com sucesso.")
+        return
+
+    cols = [
+        "pipeline", "branch", "selecao", "n_splits",
+        "cv_recall_mean", "cv_recall_std", "cv_recall_ic95_lower", "cv_recall_ic95_upper",
+        "cv_f1_mean", "cv_f1_std", "cv_precision_mean", "cv_roc_auc_mean",
+        "cv_auprc_mean", "cv_auprc_std", "folds_recall_zero",
+        "insample_recall", "insample_f1",
+        "n_features_originais", "n_componentes_pca", "n_grupos_imagens", "tempo_s",
+    ]
+    df_result = pd.DataFrame(validos)[cols].sort_values("cv_recall_mean", ascending=False).reset_index(drop=True)
+    print("\n" + "=" * 70)
+    print("COMPARACAO FINAL")
+    print("=" * 70)
+    print(df_result.to_string(index=False))
+
+    if any(s > 0.20 for s in df_result["cv_recall_std"].values):
+        print("\n  ATENCAO: std > 0.20 em algum pipeline — ranking NAO e estatisticamente robusto.")
+
+    out = os.path.join(RESULTS_DIR, "comparacao_pipelines.csv")
+    df_result.to_csv(out, index=False)
+    print(f"\nRelatorio salvo em: {out}")
+    print(f"Tempo total: {formatar_tempo(time.time() - t_global)}")
+    _gerar_boxplot_comparativo(validos)
 
 
 if __name__ == "__main__":
