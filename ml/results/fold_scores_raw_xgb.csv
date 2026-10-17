@@ -1,0 +1,11 @@
+pipeline,metrica,fold,score
+raw_xgb,recall,0,0.0818
+raw_xgb,recall,1,0.0093
+raw_xgb,f1,0,0.1035
+raw_xgb,f1,1,0.0179
+raw_xgb,precision,0,0.1409
+raw_xgb,precision,1,0.2086
+raw_xgb,roc_auc,0,0.5425
+raw_xgb,roc_auc,1,0.5088
+raw_xgb,average_precision,0,0.0832
+raw_xgb,average_precision,1,0.2114

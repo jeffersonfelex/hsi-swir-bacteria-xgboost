@@ -5,7 +5,7 @@ import numpy as np
 AMOSTRAS_ATCC = ["ATCC13", "ATCC16", "ATCC27"]
 
 
-def label_by_atcc(df: pd.DataFrame) -> pd.DataFrame:
+def label_by_atcc(df: pd.DataFrame, limiar_sim: float = None, **kwargs) -> pd.DataFrame:
     """
     Gera labels binárias baseadas na identificação das amostras ATCC.
 
@@ -14,7 +14,8 @@ def label_by_atcc(df: pd.DataFrame) -> pd.DataFrame:
         0 → sensível   (amostras clínicas)
 
     Args:
-        df: DataFrame com coluna 'sample_id'
+        df: DataFrame com coluna 'sample_id' ou 'filename'
+        limiar_sim: Parâmetro opcional de similaridade
 
     Returns:
         DataFrame com coluna 'label' adicionada
@@ -25,14 +26,27 @@ def label_by_atcc(df: pd.DataFrame) -> pd.DataFrame:
 
     if df is None or df.empty:
         print("❌ DataFrame vazio.")
-        df["label"] = 0
+        if df is not None:
+            df["label"] = 0
         return df
 
-    if "sample_id" not in df.columns:
-        raise ValueError("❌ Coluna 'sample_id' não encontrada no DataFrame.")
+    # Normalizar coluna identificadora
+    col_id = None
+    for cand in ["sample_id", "filename", "sample_name", "id"]:
+        if cand in df.columns:
+            col_id = cand
+            break
 
-    pattern  = "|".join(AMOSTRAS_ATCC)
-    atcc_mask = df["sample_id"].str.contains(pattern, case=False, na=False)
+    if col_id is None:
+        raise ValueError("❌ Coluna identificadora ('sample_id' ou 'filename') não encontrada no DataFrame.")
+
+    if "sample_id" not in df.columns:
+        df["sample_id"] = df[col_id]
+    if "filename" not in df.columns:
+        df["filename"] = df[col_id]
+
+    pattern = "|".join(AMOSTRAS_ATCC)
+    atcc_mask = df["sample_id"].astype(str).str.contains(pattern, case=False, na=False)
 
     df["label"] = atcc_mask.astype(int)
 

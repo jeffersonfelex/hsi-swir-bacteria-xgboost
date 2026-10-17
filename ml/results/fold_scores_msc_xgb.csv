@@ -1,0 +1,11 @@
+pipeline,metrica,fold,score
+msc_xgb,recall,0,0.2731
+msc_xgb,recall,1,0.0004
+msc_xgb,f1,0,0.1055
+msc_xgb,f1,1,0.0008
+msc_xgb,precision,0,0.0653
+msc_xgb,precision,1,0.1254
+msc_xgb,roc_auc,0,0.5542
+msc_xgb,roc_auc,1,0.4569
+msc_xgb,average_precision,0,0.0579
+msc_xgb,average_precision,1,0.1814

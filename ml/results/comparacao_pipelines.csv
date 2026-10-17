@@ -1,0 +1,9 @@
+pipeline,branch,selecao,n_splits,cv_recall_mean,cv_recall_std,cv_recall_ic95_lower,cv_recall_ic95_upper,cv_f1_mean,cv_f1_std,cv_precision_mean,cv_roc_auc_mean,cv_auprc_mean,cv_auprc_std,folds_recall_zero,insample_recall,insample_f1,n_features_originais,n_componentes_pca,n_grupos_imagens,tempo_s
+log_xgb,log,XGBoost Importance,2,0.181,0.1585,-1.8328,2.1949,0.1522,0.1089,0.379,0.6015,0.1937,0.0467,[],0.3836,0.5401,23,7,13,3052.4
+log_mi,log,Mutual Information,2,0.181,0.1585,-1.8328,2.1949,0.1522,0.1089,0.379,0.6015,0.1937,0.0467,[],0.3836,0.5401,23,7,13,3499.9
+deriv_xgb,deriv,XGBoost Importance,2,0.1526,0.1413,-1.6428,1.948,0.1145,0.0927,0.2254,0.6276,0.1752,0.051,[],0.811,0.879,23,17,13,3872.3
+deriv_mi,deriv,Mutual Information,2,0.1526,0.1413,-1.6428,1.948,0.1145,0.0927,0.2254,0.6276,0.1752,0.051,[],0.811,0.879,23,17,13,3935.5
+msc_mi,msc,Mutual Information,2,0.1368,0.1364,-1.5958,1.8694,0.0532,0.0523,0.0954,0.5055,0.1196,0.0617,[],0.6859,0.7885,23,16,13,5058.3
+msc_xgb,msc,XGBoost Importance,2,0.1368,0.1364,-1.5958,1.8694,0.0532,0.0523,0.0954,0.5055,0.1196,0.0617,[],0.6859,0.7885,23,16,13,4879.4
+raw_xgb,raw,XGBoost Importance,2,0.0456,0.0362,-0.4149,0.506,0.0607,0.0428,0.1747,0.5257,0.1473,0.0641,[],0.0315,0.0598,50,2,13,2410.7
+raw_mi,raw,Mutual Information,2,0.0382,0.0277,-0.314,0.3904,0.0536,0.0335,0.1803,0.5161,0.1427,0.0663,[],0.026,0.0499,100,2,13,2754.3

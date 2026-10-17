@@ -26,19 +26,29 @@ def log_transform(data: np.ndarray) -> np.ndarray:
     return -np.log(data_clean)
 
 
-def run(output_dir: str, folder_name: str):
+def run(output_dir: str, folder_name: str, input_filename: str = None):
     """
-    Lê o CSV do ROI filtrado, aplica Log(1/R) e salva o resultado.
+    Lê o CSV, aplica Log(1/R) e salva o resultado.
 
     Args:
         output_dir: diretório onde estão os arquivos
         folder_name: nome base da imagem
+        input_filename: nome específico do arquivo de entrada (opcional)
     """
-    input_path  = os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv")
+    if input_filename:
+        input_path = os.path.join(output_dir, input_filename)
+    else:
+        candidates = [
+            os.path.join(output_dir, f"{folder_name}_msc_signal.csv"),
+            os.path.join(output_dir, f"{folder_name}_roi_filtrado.csv"),
+            os.path.join(output_dir, f"{folder_name}_roi.csv"),
+        ]
+        input_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
+
     output_path = os.path.join(output_dir, f"{folder_name}_log.csv")
 
     if not os.path.exists(input_path):
-        raise FileNotFoundError(f"❌ ROI não encontrado: {input_path}")
+        raise FileNotFoundError(f"❌ Arquivo de entrada não encontrado para log: {input_path}")
 
     df = pd.read_csv(input_path)
 

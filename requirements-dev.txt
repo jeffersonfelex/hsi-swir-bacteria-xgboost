@@ -1,0 +1,9 @@
+-r requirements.txt
+# Notebooks
+jupyter
+seaborn
+chemotools
+# Orquestracao opcional (dags/)
+# apache-airflow
+# Testes
+pytest>=8

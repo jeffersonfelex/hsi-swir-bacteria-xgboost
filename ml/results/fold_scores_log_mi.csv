@@ -1,0 +1,11 @@
+pipeline,metrica,fold,score
+log_mi,recall,0,0.3395
+log_mi,recall,1,0.0226
+log_mi,f1,0,0.2612
+log_mi,f1,1,0.0433
+log_mi,precision,0,0.2122
+log_mi,precision,1,0.5458
+log_mi,roc_auc,0,0.69
+log_mi,roc_auc,1,0.513
+log_mi,average_precision,0,0.1471
+log_mi,average_precision,1,0.2404

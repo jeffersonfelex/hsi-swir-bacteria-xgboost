@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls \"c:\\\\Users\\\\Jefferson\\\\Documents\\\\GitHub\\\\ic-2025\\\\features_selected\"\" 2>/dev/null || echo \"DIRETÓRIO NÃO EXISTE \")",
-      "Bash(ls c:/Users/Jefferson/Documents/GitHub/ic-2025/dataSet/hsi_original/*_roi_filtrado.csv)",
-      "Bash(wc -l echo --- ls c:/Users/Jefferson/Documents/GitHub/ic-2025/dataSet/hsi_original/*_roi_filtrado.csv)"
-    ]
-  }
-}

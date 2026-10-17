@@ -8,7 +8,7 @@ import sys
 import logging
 
 # 📌 Diretórios
-BASE_DIR = "/mnt/c/Users/jefferson.faria/Documents/GitHub/ic-2025"
+BASE_DIR = os.getenv("IC2025_BASE_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # 🔧 Logger do Airflow
 logger = logging.getLogger(__name__)
