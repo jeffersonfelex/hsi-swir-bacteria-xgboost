@@ -37,7 +37,7 @@ Conferido contra o código em `chore/baseline-pipeline-v2` e o dataset local em 
 |---|---|
 | Confirmar que a seleção MI/XGB-FI usa só treino | **Não é verdade hoje.** `main.py` seleciona sobre *todas* as imagens (incl. teste) antes do split. Para msc/log/deriv é inócuo (nada é filtrado), mas em **raw** (256→100→50 bandas) há vazamento de rótulo do teste. Correção correta: mover a seleção para depois do split (dentro da CV). Não aplicada aqui por mudar os resultados |
 | MSC com média só do treino | MSC usa a média **da própria imagem** (por ROI), não global. Não há vazamento de rótulo, mas difere do descrito |
-| `scale_pos_weight` usado? | **Não** é usado em `train.py` (razão atual ≈ 7,3 : 1, não 4,3) |
+| `scale_pos_weight` usado? | **Não** é usado em `train.py` (razão atual ≈ 6,9 : 1, não 4,3) |
 | Grid Search refit por recall | `refit="recall"` favorece limiar permissivo; considerar AUPRC e CV aninhada |
 | CV selecionando e reportando no mesmo split | Estimativa otimista; CV aninhada é o próximo passo |
 | `checar_folds`, `avaliar_teste_externo`, `analises_complementares.py`, importância por permutação | **Não existem** no repo (equivalentes parciais: `fold_scores_*.csv`, `ml/evaluate.py`) |
