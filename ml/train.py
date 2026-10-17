@@ -2,7 +2,9 @@
 Treinamento dos 8 pipelines (4 branches x 2 selecoes de features).
 
 Para cada pipeline:
-  StandardScaler -> PCA (95% variancia) -> XGBoost
+  Selecao de atributos (MI ou MI->XGB-FI) -> StandardScaler -> PCA (95% variancia) -> XGBoost
+  A selecao e etapa do Pipeline: e refeita a cada fold usando so o fold de treino
+  e, no refit final, so o treino externo (nunca ve o conjunto de teste).
   Grid Search (324 combinacoes) com StratifiedGroupKFold agrupando por imagem.
 
 O numero de folds e adaptativo: com apenas 3 isolados resistentes (ATCC), e
@@ -19,6 +21,8 @@ Modelos em ml/models/xgb_<nome>.json
 import os
 import sys
 import time
+import shutil
+import tempfile
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -45,6 +49,9 @@ from sklearn.metrics import (
 )
 from xgboost import XGBClassifier
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from selection import SelecaoMIXGB
+
 # ==============================================================================
 # CONFIGURACAO
 # ==============================================================================
@@ -70,6 +77,8 @@ PIPELINES = [
 
 PCA_N_COMPONENTS = 0.95
 MAX_SPLITS = 5
+# Pixels (do treino/fold de treino) usados para ajustar MI/XGB-FI; 0 = todos.
+SELECAO_MAX_AMOSTRAS = int(os.getenv("IC2025_SELECAO_MAX_AMOSTRAS", "50000"))
 
 # --- Aceleradores (variaveis de ambiente) -------------------------------------
 # IC2025_GRID = full (padrao, 324 combinacoes) | fast (12 combinacoes)
@@ -247,8 +256,8 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
 
     # Preferir o conjunto de TREINO externo (split_dataset.py); cair para o dataset
     # completo apenas se o split ainda nao foi executado.
-    train_path   = os.path.join(DATA_DIR, f"train_{nome}.csv")
-    dataset_path = train_path if os.path.exists(train_path) else os.path.join(FEATURES_DIR, f"dataset_{nome}.csv")
+    train_path   = os.path.join(DATA_DIR, f"train_{branch}.csv")
+    dataset_path = train_path if os.path.exists(train_path) else os.path.join(FEATURES_DIR, f"dataset_{branch}.csv")
     if not os.path.exists(dataset_path):
         print(f"  Dataset nao encontrado: {dataset_path}")
         return {"pipeline": nome, "status": "dataset nao encontrado"}
@@ -300,11 +309,15 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
         objective="binary:logistic", eval_metric="logloss",
         device=device, random_state=42, n_jobs=1,
     )
+    # memory: o seletor/scaler/PCA sao reajustados por fold, mas nao a cada combinacao
+    # do grid (seus parametros nao mudam) — o cache evita refazer MI centenas de vezes.
+    cache_dir = tempfile.mkdtemp(prefix="ic2025_cache_")
     pipeline_sklearn = Pipeline([
-        ("scaler", StandardScaler()),
-        ("pca",    PCA(n_components=PCA_N_COMPONENTS, random_state=42)),
-        ("xgb",    xgb_base),
-    ])
+        ("selecao", SelecaoMIXGB(modo=selecao, max_amostras=SELECAO_MAX_AMOSTRAS)),
+        ("scaler",  StandardScaler()),
+        ("pca",     PCA(n_components=PCA_N_COMPONENTS, random_state=42)),
+        ("xgb",     xgb_base),
+    ], memory=cache_dir)
 
     cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
     n_jobs = 1 if device == "cuda" else -1
@@ -322,6 +335,9 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
 
     t_decorrido = time.time() - t_inicio
     best_pipeline = grid.best_estimator_
+    sel = best_pipeline.named_steps["selecao"]
+    nomes_sel = sel.nomes_selecionados(feature_cols)
+    print(f"  Selecao ({selecao}) ajustada so no treino: {len(feature_cols)} -> {len(nomes_sel)} atributos")
     print(f"  Concluido em {formatar_tempo(t_decorrido)}")
     print(f"  Melhores hiperparametros: {grid.best_params_}")
 
@@ -330,6 +346,7 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
         scoring=scoring, return_train_score=False, n_jobs=n_jobs,
     )
     mf = analisar_folds(cv_detalhado, nome)
+    shutil.rmtree(cache_dir, ignore_errors=True)
 
     cv_recall_mean = mf.get("recall", {}).get("media", float("nan"))
     cv_recall_std  = mf.get("recall", {}).get("std", float("nan"))
@@ -366,13 +383,14 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
         "insample_recall": insample_recall, "insample_f1": insample_f1,
         "insample_auprc": insample_auprc,
         "insample_roc_auc": round(roc_auc_score(y, y_proba), 4),
-        "n_features_originais": X.shape[1], "n_componentes_pca": n_pca,
+        "n_features_originais": X.shape[1], "n_features_selecionadas": len(nomes_sel),
+        "n_componentes_pca": n_pca,
         "n_grupos_imagens": n_grupos, "tempo_s": round(t_decorrido, 1),
         **{f"param_{k.replace('xgb__', '')}": v for k, v in grid.best_params_.items()},
     }
 
     gap = round(insample_recall - cv_recall_mean, 4) if cv_recall_mean == cv_recall_mean else "N/A"
-    print(f"\n  MetriCAS [{nome.upper()}]  PCA: {X.shape[1]} -> {n_pca} componentes")
+    print(f"\n  MetriCAS [{nome.upper()}]  selecao: {X.shape[1]} -> {len(nomes_sel)} | PCA: -> {n_pca} componentes")
     print(f"  cv_recall : {cv_recall_mean} +/- {cv_recall_std}  IC95%=[{cv_recall_ic95[0]}, {cv_recall_ic95[1]}]")
     print(f"  cv_f1     : {cv_f1_mean} +/- {cv_f1_std}")
     print(f"  cv_auprc  : {cv_auprc_mean} +/- {cv_auprc_std}   cv_roc_auc: {cv_rocauc_mean}")
@@ -386,7 +404,7 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
     )
     # Pipeline completo (scaler + PCA + XGBoost) exatamente como foi treinado:
     # evaluate.py o carrega, em vez de reajustar scaler/PCA por conta propria.
-    best_pipeline.set_params(xgb__device="cpu")
+    best_pipeline.set_params(xgb__device="cpu", memory=None)
     joblib.dump(best_pipeline, os.path.join(MODEL_DIR, f"pipeline_{nome}.joblib"))
     pd.DataFrame(grid.cv_results_).to_csv(
         os.path.join(RESULTS_DIR, f"grid_results_{nome}.csv"), index=False
@@ -398,6 +416,9 @@ def treinar(branch: str, selecao: str, idx: int, total: int, device: str) -> dic
     ]
     pd.DataFrame(fold_rows).to_csv(
         os.path.join(RESULTS_DIR, f"fold_scores_{nome}.csv"), index=False
+    )
+    pd.DataFrame({"feature": nomes_sel, "rank": range(1, len(nomes_sel) + 1)}).to_csv(
+        os.path.join(RESULTS_DIR, f"features_selected_{nome}.csv"), index=False
     )
     pca_imp = best_pipeline.named_steps["xgb"].feature_importances_
     pd.DataFrame({
@@ -468,7 +489,8 @@ def main():
         "cv_f1_mean", "cv_f1_std", "cv_precision_mean", "cv_roc_auc_mean",
         "cv_auprc_mean", "cv_auprc_std", "folds_indefinidos",
         "insample_recall", "insample_f1",
-        "n_features_originais", "n_componentes_pca", "n_grupos_imagens", "tempo_s",
+        "n_features_originais", "n_features_selecionadas", "n_componentes_pca",
+        "n_grupos_imagens", "tempo_s",
     ]
     df_result = pd.DataFrame(validos)[cols].sort_values("cv_recall_mean", ascending=False).reset_index(drop=True)
     print("\n" + "=" * 70)

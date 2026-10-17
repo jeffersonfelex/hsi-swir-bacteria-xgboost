@@ -1,5 +1,5 @@
 """
-Divisao treino/teste POR IMAGEM (nunca por pixel), estratificada por classe.
+Divisao treino/teste POR IMAGEM (por branch, ANTES da selecao de atributos) (nunca por pixel), estratificada por classe.
 
 Com apenas 3 isolados resistentes (ATCC13/16/27) um GroupShuffleSplit puro pode
 deixar a classe resistente inteira no treino ou no teste. Aqui a divisao e feita
@@ -27,12 +27,9 @@ OUTPUT_DIR   = os.path.join(BASE_DIR, "ml", "data")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-PIPELINES = [
-    "msc_mi", "msc_xgb",
-    "log_mi", "log_xgb",
-    "deriv_mi", "deriv_xgb",
-    "raw_mi", "raw_xgb",
-]
+# O split e feito UMA vez por branch, sobre o dataset completo (sem selecao de
+# atributos). A selecao MI/XGB-FI e ajustada depois, so no treino (ml/selection.py).
+PIPELINES = ["msc", "log", "deriv", "raw"]
 
 TEST_FRACTION = 0.30
 RANDOM_STATE  = 42

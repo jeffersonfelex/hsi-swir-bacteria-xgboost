@@ -2,8 +2,9 @@
 Avaliacao no CONJUNTO DE TESTE EXTERNO (separado por imagem em split_dataset.py).
 
 Para cada pipeline:
-  - carrega ml/models/xgb_<nome>.json (treinado por ml/train.py);
-  - reajusta StandardScaler + PCA no conjunto de TREINO correspondente;
+  - carrega ml/models/pipeline_<nome>.joblib (selecao de atributos + StandardScaler
+    + PCA + XGBoost, tudo ajustado so no TREINO por ml/train.py);
+  - aplica no TESTE as colunas ja escolhidas no treino (sem reselecionar);
   - avalia no conjunto de TESTE no nivel de PIXEL e no nivel de IMAGEM
     (voto majoritario dos pixels de cada imagem);
   - gera curvas ROC e Precisao-Recall.
@@ -31,15 +32,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, average_precision_score, confusion_matrix,
     classification_report, RocCurveDisplay, PrecisionRecallDisplay,
 )
-from xgboost import XGBClassifier
 
 BASE_DIR = os.getenv(
     "IC2025_BASE_DIR",
@@ -74,41 +71,30 @@ def _feature_cols(df: pd.DataFrame) -> list:
 
 
 def carregar(pipeline_name: str):
-    model_path = os.path.join(MODEL_DIR, f"xgb_{pipeline_name}.json")
-    test_path  = os.path.join(DATA_DIR,  f"test_{pipeline_name}.csv")
-    train_path = os.path.join(DATA_DIR,  f"train_{pipeline_name}.csv")
+    """Carrega o pipeline treinado (selecao + scaler + PCA + XGBoost) e o teste do branch.
 
-    pipe_path  = os.path.join(MODEL_DIR, f"pipeline_{pipeline_name}.joblib")
+    A selecao de atributos ja esta DENTRO do pipeline serializado, com as colunas
+    escolhidas somente no treino; aqui ela apenas e aplicada ao teste.
+    """
+    branch = pipeline_name.rsplit("_", 1)[0]
+    test_path = os.path.join(DATA_DIR, f"test_{branch}.csv")
+    pipe_path = os.path.join(MODEL_DIR, f"pipeline_{pipeline_name}.joblib")
 
-    if not os.path.exists(test_path):
-        print(f"  [pulado] arquivo ausente: {os.path.relpath(test_path, BASE_DIR)}")
-        return None
+    for p in (test_path, pipe_path):
+        if not os.path.exists(p):
+            print(f"  [pulado] arquivo ausente: {os.path.relpath(p, BASE_DIR)} "
+                  f"(rode split_dataset.py e train.py)")
+            return None
 
     df_test = pd.read_csv(test_path)
     feats = _feature_cols(df_test)
+    pipe = joblib.load(pipe_path)
 
-    # Preferencia: pipeline serializado por train.py (mesmo scaler/PCA do treino).
-    if os.path.exists(pipe_path):
-        return joblib.load(pipe_path), df_test, feats
-
-    # Fallback (modelos antigos): reajusta scaler/PCA no treino. Pode divergir do
-    # treino original se train.py usou subamostragem (IC2025_MAX_PIXELS_PER_IMG).
-    for p in (model_path, train_path):
-        if not os.path.exists(p):
-            print(f"  [pulado] arquivo ausente: {os.path.relpath(p, BASE_DIR)}")
-            return None
-    print("  AVISO: pipeline_*.joblib ausente; reajustando scaler/PCA (rode train.py de novo).")
-    df_train = pd.read_csv(train_path)
-
-    xgb = XGBClassifier()
-    xgb.load_model(model_path)
-    n_comp = xgb.get_booster().num_features()
-
-    scaler = StandardScaler().fit(df_train[feats].fillna(0).values)
-    pca = PCA(n_components=n_comp, random_state=42).fit(
-        scaler.transform(df_train[feats].fillna(0).values)
-    )
-    pipe = Pipeline([("scaler", scaler), ("pca", pca), ("xgb", xgb)])
+    n_esperado = pipe.named_steps["selecao"].n_features_in_
+    if len(feats) != n_esperado:
+        print(f"  [pulado] teste tem {len(feats)} atributos, o pipeline foi treinado com "
+              f"{n_esperado} (rode split_dataset.py e train.py de novo).")
+        return None
     return pipe, df_test, feats
 
 
